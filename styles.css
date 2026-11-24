@@ -31,7 +31,7 @@ body {
 }
 
 .broadcast-glow {
-  box-shadow: 0 0 32px rgba(2, 6, 23, 0.9), inset 0 1px 0 rgba(148, 163, 184, 0.08);
+  box-shadow: 0 0 36px rgba(2, 6, 23, 0.92), inset 0 1px 0 rgba(148, 163, 184, 0.08);
 }
 
 .sector-purple {

@@ -1,43 +1,52 @@
 // ============================================================================
 // APEX GRID MANAGER — GLOBAL OPEN-WHEEL SERIES (GOWS)
-// Part 1/2: Series Data, Multi-Slot Save System, Web Audio Synth,
-//           1400x820 Procedural Track Generator, Q1/Q2/Q3 Qualifying Engine,
-//           and Wheel-to-Wheel Race Physics Engine (100% Copyright-Free)
+// Part 1/2: Copyright-Free Series Data, Multi-Slot Save System, Web Audio,
+//           1600x920 Circuit Generator, Seamless 3-Phase Pit Lane,
+//           Distance-Scaled Tire Strategy & Mandatory 2-Compound Rule,
+//           Q1/Q2/Q3 Qualifying, and Anti-Stacking Wheel-to-Wheel Physics
 // ============================================================================
 
 (function () {
   'use strict';
 
   // --------------------------------------------------------------------------
-  // 1. COPYRIGHT-FREE SERIES DATA
+  // 1. COPYRIGHT-FREE SERIES DATA & REALISTIC TIRE SPECS
   // --------------------------------------------------------------------------
+  // stintLifeFraction = fraction of total race laps before tire hits ~95% wear
+  // Cliff begins sharply at 70% wear (~73% of stintLifeFraction)
   const TIRE_SPECS = {
     SOFT: {
       label: 'Soft C4', short: 'S', color: '#ef4444', textColor: '#ffffff',
-      baseGrip: 1.052, degPerLap: 4.1, optTempMin: 88, optTempMax: 112,
-      optimalWetMin: 0, optimalWetMax: 18,
+      baseGrip: 1.064, stintLifeFraction: 0.37, optTempMin: 88, optTempMax: 112,
+      optimalWetMin: 0, optimalWetMax: 18, isDry: true,
     },
     MEDIUM: {
       label: 'Medium C3', short: 'M', color: '#eab308', textColor: '#0f172a',
-      baseGrip: 1.024, degPerLap: 2.5, optTempMin: 84, optTempMax: 108,
-      optimalWetMin: 0, optimalWetMax: 20,
+      baseGrip: 1.032, stintLifeFraction: 0.56, optTempMin: 84, optTempMax: 108,
+      optimalWetMin: 0, optimalWetMax: 20, isDry: true,
     },
     HARD: {
       label: 'Hard C2', short: 'H', color: '#f8fafc', textColor: '#0f172a',
-      baseGrip: 0.998, degPerLap: 1.48, optTempMin: 80, optTempMax: 106,
-      optimalWetMin: 0, optimalWetMax: 22,
+      baseGrip: 1.000, stintLifeFraction: 0.78, optTempMin: 80, optTempMax: 106,
+      optimalWetMin: 0, optimalWetMax: 22, isDry: true,
     },
     INTER: {
       label: 'Intermediate', short: 'I', color: '#22c55e', textColor: '#052e16',
-      baseGrip: 0.988, degPerLap: 2.3, optTempMin: 68, optTempMax: 95,
-      optimalWetMin: 18, optimalWetMax: 65,
+      baseGrip: 0.990, stintLifeFraction: 0.58, optTempMin: 68, optTempMax: 95,
+      optimalWetMin: 18, optimalWetMax: 65, isDry: false,
     },
     WET: {
       label: 'Full Wet', short: 'W', color: '#3b82f6', textColor: '#ffffff',
-      baseGrip: 0.958, degPerLap: 1.9, optTempMin: 60, optTempMax: 88,
-      optimalWetMin: 60, optimalWetMax: 100,
+      baseGrip: 0.960, stintLifeFraction: 0.72, optTempMin: 60, optTempMax: 88,
+      optimalWetMin: 60, optimalWetMax: 100, isDry: false,
     },
   };
+
+  function getTireDegPerLap(compound, track) {
+    const spec = TIRE_SPECS[compound] || TIRE_SPECS.MEDIUM;
+    const expectedMaxLaps = Math.max(5, track.totalLaps * spec.stintLifeFraction);
+    return (95 / expectedMaxLaps) * track.tireAbrasion;
+  }
 
   const POINTS_SYSTEM = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1, 0, 0];
   const PRIZE_MONEY_MILLIONS = [18, 14, 11, 9, 7.5, 6, 5, 4, 3, 2.5, 2, 1.5];
@@ -69,18 +78,17 @@
   // --------------------------------------------------------------------------
   // 2. MULTI-SLOT SAVE & JSON EXPORT/IMPORT SYSTEM
   // --------------------------------------------------------------------------
-  const AUTOSAVE_KEY = 'gows_apex_autosave_v4';
-  const SLOT_PREFIX = 'gows_apex_slot_v4_';
+  const AUTOSAVE_KEY = 'gows_apex_autosave_v5';
+  const SLOT_PREFIX = 'gows_apex_slot_v5_';
 
   function createFreshCareer() {
     return {
-      version: 4,
+      version: 5,
       season: 1,
       round: 1,
       teams: JSON.parse(JSON.stringify(INITIAL_TEAMS)),
       drivers: JSON.parse(JSON.stringify(INITIAL_DRIVERS)),
       playerTeamId: 'apex-works',
-      history: [],
       savedAt: new Date().toISOString(),
     };
   }
@@ -109,8 +117,7 @@
 
     writeAutoSave(career) {
       try {
-        const payload = { ...career, savedAt: new Date().toISOString() };
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ ...career, savedAt: new Date().toISOString() }));
       } catch {}
     },
 
@@ -123,7 +130,6 @@
           if (!validateCareerObject(data)) return { slotId, empty: true };
           const pTeam = data.teams.find((t) => t.id === data.playerTeamId) || data.teams[0];
           const sortedTeams = [...data.teams].sort((a, b) => b.points - a.points);
-          const rank = sortedTeams.findIndex((t) => t.id === pTeam.id) + 1;
           return {
             slotId,
             empty: false,
@@ -131,7 +137,7 @@
             round: data.round,
             teamName: pTeam.name,
             budget: pTeam.budget,
-            rank,
+            rank: sortedTeams.findIndex((t) => t.id === pTeam.id) + 1,
             points: pTeam.points,
             savedAt: data.savedAt || '',
           };
@@ -143,8 +149,7 @@
 
     saveToSlot(slotId, career) {
       try {
-        const payload = { ...career, savedAt: new Date().toISOString() };
-        localStorage.setItem(SLOT_PREFIX + slotId, JSON.stringify(payload));
+        localStorage.setItem(SLOT_PREFIX + slotId, JSON.stringify({ ...career, savedAt: new Date().toISOString() }));
         return true;
       } catch {
         return false;
@@ -163,14 +168,11 @@
     },
 
     deleteSlot(slotId) {
-      try {
-        localStorage.removeItem(SLOT_PREFIX + slotId);
-      } catch {}
+      try { localStorage.removeItem(SLOT_PREFIX + slotId); } catch {}
     },
 
     exportToJsonFile(career) {
-      const payload = { ...career, savedAt: new Date().toISOString() };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ ...career, savedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -294,7 +296,7 @@
       filter.frequency.exponentialRampToValueAtTime(960, now + 0.24);
       filter.Q.setValueAtTime(6.8, now);
       const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.setValueAtTime(0.048, now);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
       src.connect(filter);
       filter.connect(gain);
@@ -374,18 +376,18 @@
       const ctx = this.ensureContext();
       if (!ctx) return;
       const now = ctx.currentTime;
-      [0, 0.15].forEach((offset) => {
+      [0, 0.14, 0.28].forEach((offset) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(420, now + offset);
-        osc.frequency.exponentialRampToValueAtTime(1240, now + offset + 0.11);
-        gain.gain.setValueAtTime(0.04, now + offset);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.12);
+        osc.frequency.setValueAtTime(460, now + offset);
+        osc.frequency.exponentialRampToValueAtTime(1320, now + offset + 0.09);
+        gain.gain.setValueAtTime(0.042, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.11);
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.start(now + offset);
-        osc.stop(now + offset + 0.125);
+        osc.stop(now + offset + 0.115);
       });
     }
 
@@ -468,10 +470,10 @@
   const soundEngine = new SoundEngine();
 
   // --------------------------------------------------------------------------
-  // 4. EXPANDED 1400x820 PROCEDURAL CIRCUIT GENERATOR
+  // 4. EXPANDED 1600x920 CIRCUIT GENERATOR WITH SEAMLESS PIT LANE GEOMETRY
   // --------------------------------------------------------------------------
-  const TRACK_W = 1400;
-  const TRACK_H = 820;
+  const TRACK_W = 1600;
+  const TRACK_H = 920;
 
   const CIRCUIT_PREFIXES = ['Aethelgard', 'Valenport', 'Cinderfall', 'Solstice', 'Kuroshio', 'Vespera', 'Nordhaven', 'Altiplano', 'Meridian', 'Halcyon', 'Stratos', 'Oakhaven'];
   const CIRCUIT_SUFFIXES = ['Autodrome', 'International Circuit', 'Ring', 'Speedway Park', 'Motorsport Arena', 'Coastal Circuit'];
@@ -500,25 +502,24 @@
     const country = COUNTRIES[Math.floor(rng() * COUNTRIES.length)];
     const name = `${prefix} ${suffix}`;
 
-    // Large, open canvas geometry so cars & battles have breathing room
     const cx = TRACK_W * 0.5;
     const cy = TRACK_H * 0.5;
-    const numControlPoints = 11 + Math.floor(rng() * 3); // 11-13 clean, sweeping corners
+    const numControlPoints = 11 + Math.floor(rng() * 3);
     const controlPts = [];
 
     for (let i = 0; i < numControlPoints; i++) {
       const angle = (i / numControlPoints) * Math.PI * 2;
       const isBottomStraight = Math.sin(angle) > 0.72 && Math.abs(Math.cos(angle)) < 0.58;
-      const rx = isBottomStraight ? 545 : 395 + rng() * 190;
-      const ry = isBottomStraight ? 290 : 195 + rng() * 130;
-      const jitterAngle = isBottomStraight ? angle : angle + (rng() - 0.5) * (Math.PI / numControlPoints) * 0.42;
+      const rx = isBottomStraight ? 635 : 465 + rng() * 215;
+      const ry = isBottomStraight ? 340 : 230 + rng() * 145;
+      const jitterAngle = isBottomStraight ? angle : angle + (rng() - 0.5) * (Math.PI / numControlPoints) * 0.40;
       controlPts.push({
-        x: Math.max(105, Math.min(TRACK_W - 105, cx + Math.cos(jitterAngle) * rx)),
-        y: Math.max(100, Math.min(TRACK_H - 95, cy + Math.sin(jitterAngle) * ry)),
+        x: Math.max(120, Math.min(TRACK_W - 120, cx + Math.cos(jitterAngle) * rx)),
+        y: Math.max(110, Math.min(TRACK_H - 105, cy + Math.sin(jitterAngle) * ry)),
       });
     }
 
-    const samplesPerSegment = 42;
+    const samplesPerSegment = 48;
     const rawPoints = [];
     const n = controlPts.length;
 
@@ -545,7 +546,7 @@
       cumulativeDist.push(totalPixelLength);
     }
 
-    const uniformCount = 420;
+    const uniformCount = 480;
     const waypoints = [];
     for (let i = 0; i < uniformCount; i++) {
       const targetDist = (i / uniformCount) * totalPixelLength;
@@ -586,7 +587,6 @@
       totalCurvature += curr.curvature;
     }
 
-    // Rotate so index 0 sits at bottom-most straight (Start / Finish)
     let bottomIdx = 0;
     let maxY = -Infinity;
     for (let i = 0; i < uniformCount; i++) {
@@ -602,14 +602,14 @@
       rotatedWaypoints.push({ ...src, progress: i / uniformCount });
     }
 
-    // Identify numbered turns (curvature peaks separated by >= 28 indices)
+    // Numbered corners + braking zones
     const turns = [];
-    let lastTurnIdx = -30;
-    for (let i = 18; i < uniformCount - 14; i++) {
+    let lastTurnIdx = -34;
+    for (let i = 36; i < uniformCount - 36; i++) {
       const c = rotatedWaypoints[i].curvature;
-      if (c > 0.145 && i - lastTurnIdx >= 28) {
+      if (c > 0.14 && i - lastTurnIdx >= 34) {
         let peakIdx = i;
-        for (let k = i; k < Math.min(uniformCount - 5, i + 12); k++) {
+        for (let k = i; k < Math.min(uniformCount - 10, i + 14); k++) {
           if (rotatedWaypoints[k].curvature > rotatedWaypoints[peakIdx].curvature) peakIdx = k;
         }
         const turnNum = turns.length + 1;
@@ -620,17 +620,16 @@
           y: rotatedWaypoints[peakIdx].y,
           progress: peakIdx / uniformCount,
         });
-        // Mark braking zone leading into this corner
-        for (let b = 1; b <= 10; b++) {
+        for (let b = 1; b <= 12; b++) {
           const bIdx = (peakIdx - b + uniformCount) % uniformCount;
           rotatedWaypoints[bIdx].isBrakingZone = true;
           rotatedWaypoints[bIdx].turnNumber = turnNum;
         }
-        for (let a = 0; a <= 6; a++) {
+        for (let a = 0; a <= 7; a++) {
           rotatedWaypoints[(peakIdx + a) % uniformCount].turnNumber = turnNum;
         }
         lastTurnIdx = peakIdx;
-        i = peakIdx + 12;
+        i = peakIdx + 14;
       }
     }
 
@@ -641,9 +640,15 @@
     const slen = Math.hypot(sdx, sdy) || 1;
     const startNormal = { nx: -sdy / slen, ny: sdx / slen };
 
-    // Wide parallel pit lane tucked cleanly inside the main straight
+    // SEAMLESS PIT LANE:
+    // Exact entry at index -pitSpan (progress 0.925), pit box at 0 (0.00), exit at +pitSpan (0.075).
+    // Smooth cosine ease-in/out guarantees pitWaypoints[0] & pitWaypoints[last] sit
+    // directly on the main track centerline with ZERO jump or teleportation!
+    const pitSpan = 36; // 36 / 480 = 0.075 before & after start/finish
+    const pitEntryProgress = (uniformCount - pitSpan) / uniformCount; // 0.925
+    const pitExitProgress = pitSpan / uniformCount;                   // 0.075
     const pitWaypoints = [];
-    const pitSpan = 42;
+
     for (let offset = -pitSpan; offset <= pitSpan; offset++) {
       const idx = (offset + uniformCount) % uniformCount;
       const prev = rotatedWaypoints[(idx - 1 + uniformCount) % uniformCount];
@@ -651,6 +656,7 @@
       const tx = next.x - prev.x;
       const ty = next.y - prev.y;
       const tlen = Math.hypot(tx, ty) || 1;
+
       let nx = -ty / tlen;
       let ny = tx / tlen;
       const toCenterX = cx - rotatedWaypoints[idx].x;
@@ -659,8 +665,13 @@
         nx = -nx;
         ny = -ny;
       }
-      const edgeFactor = Math.min(1, (pitSpan - Math.abs(offset)) / 12);
-      const pitOffsetPx = 36 * edgeFactor;
+
+      // Smooth S-curve taper over first/last 14 waypoints of pit lane
+      const distFromEdge = pitSpan - Math.abs(offset);
+      const tEdge = Math.min(1, distFromEdge / 14);
+      const smoothFactor = 0.5 - 0.5 * Math.cos(tEdge * Math.PI);
+      const pitOffsetPx = 46 * smoothFactor;
+
       pitWaypoints.push({
         x: rotatedWaypoints[idx].x + nx * pitOffsetPx,
         y: rotatedWaypoints[idx].y + ny * pitOffsetPx,
@@ -668,26 +679,29 @@
     }
 
     const drsZones = [
-      { start: 0.90, end: 0.08 },
+      { start: 0.89, end: 0.07 },
       { start: 0.44, end: 0.59 },
     ];
 
     const lengthKm = Number((4.4 + rng() * 2.1).toFixed(2));
-    const totalLaps = Math.max(18, Math.min(34, Math.round(138 / lengthKm)));
+    const totalLaps = Math.max(20, Math.min(34, Math.round(140 / lengthKm)));
     const avgCurvature = totalCurvature / uniformCount;
     const aeroDemand = Number(Math.min(0.98, Math.max(0.28, avgCurvature * 4.4 + rng() * 0.14)).toFixed(2));
     const powerDemand = Number(Math.min(0.98, Math.max(0.28, 1.05 - aeroDemand * 0.62 + rng() * 0.14)).toFixed(2));
     const chassisDemand = Number(Math.min(0.98, Math.max(0.32, 0.4 + rng() * 0.48)).toFixed(2));
-    const tireAbrasion = Number((0.75 + rng() * 0.55).toFixed(2));
-    const overtakeDifficulty = Number((0.25 + rng() * 0.52).toFixed(2));
+    const tireAbrasion = Number((0.88 + rng() * 0.34).toFixed(2)); // 0.88 - 1.22
+    const overtakeDifficulty = Number((0.25 + rng() * 0.50).toFixed(2));
     const baseLapTimeSec = Number((lengthKm * 15.6 + aeroDemand * 6.2).toFixed(2));
-    const pitLossSec = Number((18.5 + rng() * 4.2).toFixed(1));
+    const pitTransitHalfSec = Number((8.4 + rng() * 1.6).toFixed(2)); // ~9s in + ~2.5s stop + ~9s out = ~20.5s total pit lane
+    const pitLossSec = Number((pitTransitHalfSec * 2 + 2.6 - baseLapTimeSec * (pitExitProgress * 2)).toFixed(1));
     const airTempC = Math.round(16 + rng() * 16);
 
     return {
       seed, name, country, lengthKm, totalLaps, baseLapTimeSec, airTempC,
-      aeroDemand, powerDemand, chassisDemand, tireAbrasion, overtakeDifficulty, pitLossSec,
-      waypoints: rotatedWaypoints, pitWaypoints, turns, drsZones, sectorSplits: [0.33, 0.67], startNormal,
+      aeroDemand, powerDemand, chassisDemand, tireAbrasion, overtakeDifficulty,
+      pitEntryProgress, pitExitProgress, pitTransitHalfSec, pitLossSec: Math.max(12.5, pitLossSec),
+      waypoints: rotatedWaypoints, pitWaypoints, turns, drsZones,
+      sectorSplits: [0.33, 0.67], startNormal,
       width: TRACK_W, height: TRACK_H,
     };
   }
@@ -703,20 +717,26 @@
     return track.waypoints[idx];
   }
 
-  function sampleTrackPose(track, progress, inPit, pitTimerSec, lateralOffsetPx = 0) {
-    const wrapped = ((progress % 1) + 1) % 1;
-    if (inPit && track.pitWaypoints.length > 0) {
-      const pitRatio = Math.min(1, Math.max(0, 1 - pitTimerSec / 22));
-      const idxFloat = pitRatio * (track.pitWaypoints.length - 1);
-      const i0 = Math.floor(idxFloat);
-      const i1 = Math.min(track.pitWaypoints.length - 1, i0 + 1);
+  // Samples smooth continuous position along main track OR pit lane (0.0 entry -> 0.5 box -> 1.0 exit)
+  function sampleTrackPose(track, progress, pitPhase, pitLaneRatio, lateralOffsetPx = 0) {
+    if (pitPhase && pitPhase !== 'NONE' && track.pitWaypoints.length > 1) {
+      const clampedRatio = Math.min(1, Math.max(0, pitLaneRatio));
+      const maxIdx = track.pitWaypoints.length - 1;
+      const idxFloat = clampedRatio * maxIdx;
+      const i0 = Math.min(maxIdx - 1, Math.floor(idxFloat));
+      const i1 = i0 + 1;
       const alpha = idxFloat - i0;
       const a = track.pitWaypoints[i0];
       const b = track.pitWaypoints[i1];
       const angle = Math.atan2(b.y - a.y, b.x - a.x);
-      return { x: a.x + (b.x - a.x) * alpha, y: a.y + (b.y - a.y) * alpha, angle };
+      return {
+        x: a.x + (b.x - a.x) * alpha,
+        y: a.y + (b.y - a.y) * alpha,
+        angle,
+      };
     }
 
+    const wrapped = ((progress % 1) + 1) % 1;
     const n = track.waypoints.length;
     const idxFloat = wrapped * n;
     const i0 = Math.floor(idxFloat) % n;
@@ -738,7 +758,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // 5. WEATHER & QUALIFYING ENGINE (3-STAGE KNOCKOUT Q1 / Q2 / Q3)
+  // 5. WEATHER & QUALIFYING ENGINE (Q1 / Q2 / Q3)
   // --------------------------------------------------------------------------
   const WEATHER_TRANSITIONS = {
     DRY: ['DRY', 'DRY', 'OVERCAST'],
@@ -762,18 +782,28 @@
     return { initial, forecast };
   }
 
-  function chooseOptimalTireForWetness(wetness, remainingLaps) {
+  function chooseOptimalTireForWetness(wetness, remainingLaps, totalLaps, compoundsUsed = [], currentTire = null) {
     if (wetness >= 60) return 'WET';
     if (wetness >= 22) return 'INTER';
-    if (remainingLaps <= 11) return 'SOFT';
-    if (remainingLaps <= 21) return 'MEDIUM';
-    return 'HARD';
+
+    const remainingFrac = remainingLaps / Math.max(1, totalLaps);
+    let preferred = remainingFrac <= 0.34 ? 'SOFT' : remainingFrac <= 0.54 ? 'MEDIUM' : 'HARD';
+
+    // Enforce GOWS Mandatory 2-Compound Dry Rule for AI!
+    const usedDry = new Set(compoundsUsed.filter((c) => TIRE_SPECS[c]?.isDry));
+    if (currentTire && TIRE_SPECS[currentTire]?.isDry) usedDry.add(currentTire);
+    if (usedDry.size < 2 && usedDry.has(preferred)) {
+      if (preferred === 'HARD') preferred = remainingFrac <= 0.45 ? 'MEDIUM' : 'MEDIUM';
+      else if (preferred === 'MEDIUM') preferred = remainingFrac <= 0.38 ? 'SOFT' : 'HARD';
+      else preferred = 'MEDIUM';
+    }
+    return preferred;
   }
 
   const QUALI_STAGE_CONFIG = {
-    Q1: { durationSec: 260, eliminateCount: 3, nextStage: 'Q2', baseEvolution: 38 },
-    Q2: { durationSec: 220, eliminateCount: 3, nextStage: 'Q3', baseEvolution: 62 },
-    Q3: { durationSec: 190, eliminateCount: 0, nextStage: 'DONE', baseEvolution: 82 },
+    Q1: { durationSec: 250, eliminateCount: 3, nextStage: 'Q2', baseEvolution: 38 },
+    Q2: { durationSec: 210, eliminateCount: 3, nextStage: 'Q3', baseEvolution: 62 },
+    Q3: { durationSec: 180, eliminateCount: 0, nextStage: 'DONE', baseEvolution: 82 },
   };
 
   function createQualifyingState(roundNumber, track, teams, drivers, initialWeather, forecast) {
@@ -781,39 +811,24 @@
     const defaultTire = initialWetness >= 60 ? 'WET' : initialWetness >= 22 ? 'INTER' : 'SOFT';
 
     const entries = drivers.map((drv, idx) => ({
-      driverId: drv.id,
-      teamId: drv.teamId,
-      eliminatedIn: null, // null | 'Q1' | 'Q2'
-      lockedGridPos: null,
-      status: 'GARAGE', // GARAGE | OUT_LAP | FLYING_LAP | IN_LAP
-      lapProgress: 0,
-      lateralOffset: 0,
-      tire: defaultTire,
-      runsCompleted: 0,
-      bestLapSec: null,
+      driverId: drv.id, teamId: drv.teamId,
+      eliminatedIn: null, lockedGridPos: null,
+      status: 'GARAGE', lapProgress: 0, lateralOffset: 0,
+      tire: defaultTire, runsCompleted: 0, bestLapSec: null,
       currentLapElapsed: 0,
-      sectors: [null, null, null],      // current run sector times
-      bestSectors: [null, null, null],  // personal best sector times
-      lastSectorColors: [null, null, null], // 'PURPLE' | 'GREEN' | 'YELLOW'
+      sectors: [null, null, null], bestSectors: [null, null, null], lastSectorColors: [null, null, null],
       inTraffic: false,
-      aiDispatchTimes: [245 - idx * 3.5, 92 - idx * 2.2], // banker run + late evolution run
+      aiDispatchTimes: [235 - idx * 4.5, 90 - idx * 3.0],
     }));
 
     return {
-      roundNumber,
-      track,
-      stage: 'Q1', // Q1 | Q2 | Q3 | DONE
+      roundNumber, track, stage: 'Q1',
       timeRemainingSec: QUALI_STAGE_CONFIG.Q1.durationSec,
-      stageComplete: false,
-      weather: initialWeather,
-      forecast,
-      trackWetness: initialWetness,
-      trackEvolution: QUALI_STAGE_CONFIG.Q1.baseEvolution, // rises toward 100%
-      sessionBestSectors: [null, null, null],
-      entries,
-      finalGridOrder: [], // driverIds P1..P12 once DONE
+      stageComplete: false, weather: initialWeather, forecast,
+      trackWetness: initialWetness, trackEvolution: QUALI_STAGE_CONFIG.Q1.baseEvolution,
+      sessionBestSectors: [null, null, null], entries, finalGridOrder: [],
       banner: { text: 'Q1 GREEN LIGHT — 12 Drivers compete; Bottom 3 eliminated', color: '#22c55e' },
-      logs: [{ id: 'q-start', lap: 1, timeSec: 0, category: 'RACE', message: `Q1 Underway at ${track.name}! Track evolution at 38%. Bottom 3 drivers will be knocked out.` }],
+      logs: [{ id: 'q-start', lap: 1, timeSec: 0, category: 'RACE', message: `Q1 Underway at ${track.name}! Bottom 3 drivers will be knocked out.` }],
     };
   }
 
@@ -822,13 +837,9 @@
     const entries = state.entries.map((e) => {
       if (e.driverId !== driverId || e.eliminatedIn || e.status !== 'GARAGE') return e;
       return {
-        ...e,
-        status: 'OUT_LAP',
-        tire: tireCompound || e.tire,
-        lapProgress: 0.02,
-        currentLapElapsed: 0,
-        sectors: [null, null, null],
-        lastSectorColors: [null, null, null],
+        ...e, status: 'OUT_LAP', tire: tireCompound || e.tire,
+        lapProgress: state.track.pitExitProgress, currentLapElapsed: 0,
+        sectors: [null, null, null], lastSectorColors: [null, null, null],
       };
     });
     return { ...state, entries };
@@ -836,17 +847,13 @@
 
   function computeQualiSortedStandings(entries) {
     const active = entries.filter((e) => !e.eliminatedIn);
-    const eliminated = entries
-      .filter((e) => e.eliminatedIn)
-      .sort((a, b) => (a.lockedGridPos || 99) - (b.lockedGridPos || 99));
-
+    const eliminated = entries.filter((e) => e.eliminatedIn).sort((a, b) => (a.lockedGridPos || 99) - (b.lockedGridPos || 99));
     active.sort((a, b) => {
       if (a.bestLapSec === null && b.bestLapSec === null) return 0;
       if (a.bestLapSec === null) return 1;
       if (b.bestLapSec === null) return -1;
       return a.bestLapSec - b.bestLapSec;
     });
-
     return [...active, ...eliminated];
   }
 
@@ -858,15 +865,13 @@
     const track = prev.track;
     const events = { lapCompleted: false, stageEnded: false, radioAlert: false };
     const timeRemainingSec = Math.max(0, prev.timeRemainingSec - dtSec);
-    let trackEvolution = Math.min(100, prev.trackEvolution + dtSec * 0.075);
+    const trackEvolution = Math.min(100, prev.trackEvolution + dtSec * 0.075);
     const sessionBestSectors = [...prev.sessionBestSectors];
     const logs = [...prev.logs];
     let banner = prev.banner;
 
     const teamMap = new Map(teams.map((t) => [t.id, t]));
     const driverMap = new Map(drivers.map((d) => [d.id, d]));
-
-    // Active cars on track for traffic/dirty-air check
     const onTrackCars = prev.entries.filter((e) => e.status !== 'GARAGE' && !e.eliminatedIn);
 
     const updatedEntries = prev.entries.map((entry) => {
@@ -875,20 +880,15 @@
       const driver = driverMap.get(entry.driverId);
       const isPlayer = team.id === playerTeamId;
 
-      // AI automatic dispatch logic
       if (!isPlayer && entry.status === 'GARAGE' && timeRemainingSec > 28) {
         const nextTrigger = entry.aiDispatchTimes.find((t) => timeRemainingSec <= t);
         if (nextTrigger !== undefined) {
           const remainingTriggers = entry.aiDispatchTimes.filter((t) => t !== nextTrigger);
           const aiTire = prev.trackWetness >= 60 ? 'WET' : prev.trackWetness >= 22 ? 'INTER' : 'SOFT';
           return {
-            ...entry,
-            status: 'OUT_LAP',
-            tire: aiTire,
-            lapProgress: 0.02,
-            currentLapElapsed: 0,
-            sectors: [null, null, null],
-            lastSectorColors: [null, null, null],
+            ...entry, status: 'OUT_LAP', tire: aiTire,
+            lapProgress: track.pitExitProgress, currentLapElapsed: 0,
+            sectors: [null, null, null], lastSectorColors: [null, null, null],
             aiDispatchTimes: remainingTriggers,
           };
         }
@@ -897,24 +897,18 @@
 
       if (entry.status === 'GARAGE') return entry;
 
-      // Check traffic on track (another car within 0.045 progress ahead)
       let inTraffic = false;
       for (let i = 0; i < onTrackCars.length; i++) {
         const other = onTrackCars[i];
         if (other.driverId === entry.driverId) continue;
         const diff = (other.lapProgress - entry.lapProgress + 1) % 1;
-        if (diff > 0.002 && diff < 0.042) {
-          inTraffic = true;
-          break;
-        }
+        if (diff > 0.002 && diff < 0.042) { inTraffic = true; break; }
       }
 
-      // Compute Qualifying Pace
       const tireSpec = TIRE_SPECS[entry.tire];
       const demandSum = track.aeroDemand + track.powerDemand + track.chassisDemand;
       const weightedCar = (team.car.aero * track.aeroDemand + team.car.powertrain * track.powerDemand + team.car.chassis * track.chassisDemand) / demandSum;
       const carDelta = (75 - weightedCar) * 0.092;
-
       const wetBlend = Math.min(1, prev.trackWetness / 70);
       const skill = driver.pace * (1 - wetBlend) + driver.wetSkill * wetBlend;
       const driverDelta = (80 - skill) * 0.072;
@@ -923,10 +917,10 @@
       if (prev.trackWetness < tireSpec.optimalWetMin) wetMismatch = (tireSpec.optimalWetMin - prev.trackWetness) * 0.14;
       else if (prev.trackWetness > tireSpec.optimalWetMax) wetMismatch = (prev.trackWetness - tireSpec.optimalWetMax) * 0.22;
 
-      const tireDelta = (1.02 - tireSpec.baseGrip) * 44;
+      const tireDelta = (1.032 - tireSpec.baseGrip) * 44;
       const evolutionBonus = -(trackEvolution / 100) * 1.45;
       const trafficPenalty = inTraffic && entry.status === 'FLYING_LAP' ? 0.85 : 0;
-      const paceMult = entry.status === 'FLYING_LAP' ? 0.945 : 1.12; // Low fuel + max ERS on flying lap!
+      const paceMult = entry.status === 'FLYING_LAP' ? 0.945 : 1.12;
       const jitter = ((100 - driver.consistency) / 100) * (Math.random() - 0.5) * 0.25;
 
       const lapTimeSec = Math.max(
@@ -944,37 +938,25 @@
       let bestLapSec = entry.bestLapSec;
       let runsCompleted = entry.runsCompleted;
 
-      // Sector splits during Flying Lap
       if (status === 'FLYING_LAP') {
         if (prevProg < track.sectorSplits[0] && nextProg >= track.sectorSplits[0]) {
           const s1 = Number(currentLapElapsed.toFixed(3));
           sectors[0] = s1;
-          if (sessionBestSectors[0] === null || s1 < sessionBestSectors[0]) {
-            sessionBestSectors[0] = s1;
-            lastSectorColors[0] = 'PURPLE';
-          } else if (bestSectors[0] === null || s1 < bestSectors[0]) {
-            lastSectorColors[0] = 'GREEN';
-          } else {
-            lastSectorColors[0] = 'YELLOW';
-          }
+          if (sessionBestSectors[0] === null || s1 < sessionBestSectors[0]) { sessionBestSectors[0] = s1; lastSectorColors[0] = 'PURPLE'; }
+          else if (bestSectors[0] === null || s1 < bestSectors[0]) lastSectorColors[0] = 'GREEN';
+          else lastSectorColors[0] = 'YELLOW';
           if (bestSectors[0] === null || s1 < bestSectors[0]) bestSectors[0] = s1;
         }
         if (prevProg < track.sectorSplits[1] && nextProg >= track.sectorSplits[1]) {
           const s2 = Number((currentLapElapsed - (sectors[0] || currentLapElapsed * 0.33)).toFixed(3));
           sectors[1] = s2;
-          if (sessionBestSectors[1] === null || s2 < sessionBestSectors[1]) {
-            sessionBestSectors[1] = s2;
-            lastSectorColors[1] = 'PURPLE';
-          } else if (bestSectors[1] === null || s2 < bestSectors[1]) {
-            lastSectorColors[1] = 'GREEN';
-          } else {
-            lastSectorColors[1] = 'YELLOW';
-          }
+          if (sessionBestSectors[1] === null || s2 < sessionBestSectors[1]) { sessionBestSectors[1] = s2; lastSectorColors[1] = 'PURPLE'; }
+          else if (bestSectors[1] === null || s2 < bestSectors[1]) lastSectorColors[1] = 'GREEN';
+          else lastSectorColors[1] = 'YELLOW';
           if (bestSectors[1] === null || s2 < bestSectors[1]) bestSectors[1] = s2;
         }
       }
 
-      // Lap boundary transitions
       if (nextProg >= 1.0) {
         nextProg -= 1.0;
         if (status === 'OUT_LAP') {
@@ -984,19 +966,12 @@
           const lapTotal = Number(currentLapElapsed.toFixed(3));
           const s3 = Number((lapTotal - (sectors[0] || lapTotal * 0.33) - (sectors[1] || lapTotal * 0.34)).toFixed(3));
           sectors[2] = s3;
-          if (sessionBestSectors[2] === null || s3 < sessionBestSectors[2]) {
-            sessionBestSectors[2] = s3;
-            lastSectorColors[2] = 'PURPLE';
-          } else if (bestSectors[2] === null || s3 < bestSectors[2]) {
-            lastSectorColors[2] = 'GREEN';
-          } else {
-            lastSectorColors[2] = 'YELLOW';
-          }
+          if (sessionBestSectors[2] === null || s3 < sessionBestSectors[2]) { sessionBestSectors[2] = s3; lastSectorColors[2] = 'PURPLE'; }
+          else if (bestSectors[2] === null || s3 < bestSectors[2]) lastSectorColors[2] = 'GREEN';
+          else lastSectorColors[2] = 'YELLOW';
           if (bestSectors[2] === null || s3 < bestSectors[2]) bestSectors[2] = s3;
 
-          if (bestLapSec === null || lapTotal < bestLapSec) {
-            bestLapSec = lapTotal;
-          }
+          if (bestLapSec === null || lapTotal < bestLapSec) bestLapSec = lapTotal;
           runsCompleted += 1;
           status = 'IN_LAP';
           currentLapElapsed = 0;
@@ -1006,11 +981,11 @@
           const rem = (lapTotal % 60).toFixed(3).padStart(6, '0');
           if (isPlayer) {
             events.radioAlert = true;
-            banner = { text: `${driver.code} SETS ${mins}:${rem}${inTraffic ? ' (IMPEDED BY TRAFFIC)' : ''}`, color: '#f59e0b' };
+            banner = { text: `${driver.code} SETS ${mins}:${rem}${inTraffic ? ' (TRAFFIC)' : ''}`, color: '#f59e0b' };
             logs.unshift({
               id: `q-lap-${driver.code}-${runsCompleted}-${timeRemainingSec.toFixed(1)}`,
               lap: runsCompleted, timeSec: timeRemainingSec, category: 'RACE',
-              message: `${driver.code} clocks ${mins}:${rem} on ${entry.tire}${inTraffic ? ' — lost time in traffic!' : ''}.`,
+              message: `${driver.code} clocks ${mins}:${rem} on ${entry.tire}${inTraffic ? ' (impeded by traffic)' : ''}.`,
             });
           }
         } else if (status === 'IN_LAP') {
@@ -1021,21 +996,12 @@
       }
 
       return {
-        ...entry,
-        status,
-        lapProgress: nextProg,
-        lateralOffset: status === 'FLYING_LAP' ? 0 : 10, // Slow out/in-lap cars stay off racing line
-        currentLapElapsed,
-        sectors,
-        bestSectors,
-        lastSectorColors,
-        bestLapSec,
-        runsCompleted,
-        inTraffic,
+        ...entry, status, lapProgress: nextProg,
+        lateralOffset: status === 'FLYING_LAP' ? 0 : 12,
+        currentLapElapsed, sectors, bestSectors, lastSectorColors, bestLapSec, runsCompleted, inTraffic,
       };
     });
 
-    // Check if stage clock hit 0 AND no active cars are mid-flying-lap
     const anyOnFlyingLap = updatedEntries.some((e) => !e.eliminatedIn && e.status === 'FLYING_LAP');
     let stageComplete = false;
 
@@ -1043,20 +1009,9 @@
       stageComplete = true;
       events.stageEnded = true;
       const cfg = QUALI_STAGE_CONFIG[prev.stage];
-      const activeSorted = updatedEntries
-        .filter((e) => !e.eliminatedIn)
-        .sort((a, b) => {
-          if (a.bestLapSec === null && b.bestLapSec === null) return 0;
-          if (a.bestLapSec === null) return 1;
-          if (b.bestLapSec === null) return -1;
-          return a.bestLapSec - b.bestLapSec;
-        });
-
-      // Guarantee every active driver gets a realistic banker time if they never left garage
+      const activeSorted = updatedEntries.filter((e) => !e.eliminatedIn);
       activeSorted.forEach((e, idx) => {
-        if (e.bestLapSec === null) {
-          e.bestLapSec = Number((track.baseLapTimeSec * 1.04 + idx * 0.25).toFixed(3));
-        }
+        if (e.bestLapSec === null) e.bestLapSec = Number((track.baseLapTimeSec * 1.04 + idx * 0.25).toFixed(3));
       });
       activeSorted.sort((a, b) => a.bestLapSec - b.bestLapSec);
 
@@ -1067,27 +1022,12 @@
           activeSorted[i].lockedGridPos = i + 1;
           activeSorted[i].status = 'GARAGE';
         }
-        const knockedOutNames = activeSorted
-          .slice(cutoff)
-          .map((e) => driverMap.get(e.driverId).code)
-          .join(', ');
+        const knockedOutNames = activeSorted.slice(cutoff).map((e) => driverMap.get(e.driverId).code).join(', ');
         banner = { text: `${prev.stage} COMPLETE — ELIMINATED: ${knockedOutNames}`, color: '#ef4444' };
-        logs.unshift({
-          id: `q-end-${prev.stage}`, lap: 0, timeSec: 0, category: 'FLAG',
-          message: `${prev.stage} Chequered Flag! Knocked out: ${knockedOutNames}.`,
-        });
       } else {
-        // Q3 Finished — lock Top 6!
-        activeSorted.forEach((e, idx) => {
-          e.lockedGridPos = idx + 1;
-          e.status = 'GARAGE';
-        });
+        activeSorted.forEach((e, idx) => { e.lockedGridPos = idx + 1; e.status = 'GARAGE'; });
         const poleDriver = driverMap.get(activeSorted[0].driverId);
         banner = { text: `POLE POSITION: ${poleDriver.name.toUpperCase()} (${poleDriver.code})!`, color: '#a855f7' };
-        logs.unshift({
-          id: 'q3-pole', lap: 0, timeSec: 0, category: 'RACE',
-          message: `POLE POSITION! ${poleDriver.name} tops Q3 shootout!`,
-        });
       }
     }
 
@@ -1096,15 +1036,8 @@
 
     return {
       nextState: {
-        ...prev,
-        timeRemainingSec,
-        stageComplete,
-        trackEvolution,
-        sessionBestSectors,
-        entries: sortedAll,
-        finalGridOrder,
-        banner,
-        logs: logs.slice(0, 60),
+        ...prev, timeRemainingSec, stageComplete, trackEvolution, sessionBestSectors,
+        entries: sortedAll, finalGridOrder, banner, logs: logs.slice(0, 60),
       },
       events,
     };
@@ -1116,53 +1049,31 @@
       const sorted = computeQualiSortedStandings(prev.entries);
       return { ...prev, stage: 'DONE', stageComplete: true, finalGridOrder: sorted.map((e) => e.driverId) };
     }
-
     const nextStage = cfg.nextStage;
     const nextCfg = QUALI_STAGE_CONFIG[nextStage];
     const entries = prev.entries.map((e, idx) => {
       if (e.eliminatedIn) return e;
       return {
-        ...e,
-        status: 'GARAGE',
-        lapProgress: 0,
-        bestLapSec: null, // Reset times for new knockout round!
-        sectors: [null, null, null],
-        bestSectors: [null, null, null],
-        lastSectorColors: [null, null, null],
+        ...e, status: 'GARAGE', lapProgress: 0, bestLapSec: null,
+        sectors: [null, null, null], bestSectors: [null, null, null], lastSectorColors: [null, null, null],
         currentLapElapsed: 0,
-        aiDispatchTimes: [nextCfg.durationSec - 16 - idx * 3, 84 - idx * 2],
+        aiDispatchTimes: [nextCfg.durationSec - 16 - idx * 3.5, 84 - idx * 2.5],
       };
     });
-
     return {
-      ...prev,
-      stage: nextStage,
-      timeRemainingSec: nextCfg.durationSec,
-      stageComplete: false,
-      trackEvolution: nextCfg.baseEvolution,
-      sessionBestSectors: [null, null, null],
-      entries,
-      banner: {
-        text: nextStage === 'Q3'
-          ? 'Q3 POLE SHOOTOUT — Top 6 fight for P1!'
-          : `${nextStage} GREEN LIGHT — 9 Drivers remain; Bottom 3 eliminated`,
-        color: '#22c55e',
-      },
-      logs: [
-        {
-          id: `q-begin-${nextStage}`, lap: 0, timeSec: nextCfg.durationSec, category: 'RACE',
-          message: `${nextStage} starts! Track grip evolved to ${nextCfg.baseEvolution}%.`,
-        },
-        ...prev.logs,
-      ],
+      ...prev, stage: nextStage, timeRemainingSec: nextCfg.durationSec,
+      stageComplete: false, trackEvolution: nextCfg.baseEvolution,
+      sessionBestSectors: [null, null, null], entries,
+      banner: { text: nextStage === 'Q3' ? 'Q3 POLE SHOOTOUT — Top 6 fight for P1!' : `${nextStage} GREEN LIGHT — Bottom 3 eliminated`, color: '#22c55e' },
     };
   }
 
   // --------------------------------------------------------------------------
-  // 6. REALISTIC WHEEL-TO-WHEEL RACE SIMULATION ENGINE
+  // 6. RACE SIMULATION ENGINE (SMOOTH PIT LANE, ANTI-STACKING, 2-COMPOUND RULE)
   // --------------------------------------------------------------------------
   function createInitialRaceState(roundNumber, track, teams, drivers, playerSetups, initialWeather, forecast, qualiGridOrder) {
     const initialWetness = TARGET_WETNESS[initialWeather];
+    const isWetStart = initialWetness >= 22;
 
     let orderedDrivers;
     if (Array.isArray(qualiGridOrder) && qualiGridOrder.length === drivers.length) {
@@ -1180,33 +1091,56 @@
 
     const cars = orderedDrivers.map((drv, idx) => {
       const playerSetup = playerSetups.find((s) => s.driverId === drv.id);
-      const startingTire = playerSetup ? playerSetup.startingTire : chooseOptimalTireForWetness(initialWetness, track.totalLaps);
+      let startingTire;
+      if (playerSetup) {
+        startingTire = playerSetup.startingTire;
+      } else if (isWetStart) {
+        startingTire = initialWetness >= 60 ? 'WET' : 'INTER';
+      } else {
+        // AI varies starting compounds across Soft / Medium / Hard for real strategic battles!
+        const aiPool = idx < 4 ? ['SOFT', 'MEDIUM', 'MEDIUM'] : idx < 8 ? ['MEDIUM', 'SOFT', 'HARD'] : ['HARD', 'MEDIUM', 'SOFT'];
+        startingTire = aiPool[idx % aiPool.length];
+      }
+
       const startingFuelKg = playerSetup ? playerSetup.startingFuelKg : Math.min(110, Math.round(track.totalLaps * 2.15 + 4));
-      const gridOffsetProgress = -0.0055 * (idx + 1);
+      // Well-spaced realistic F1 staggered starting grid boxes (no overlap!)
+      const gridOffsetProgress = -0.0095 * (idx + 1);
 
       return {
         driverId: drv.id, teamId: drv.teamId, position: idx + 1, gridPos: idx + 1, lap: 1,
         lapProgress: gridOffsetProgress, totalDistance: gridOffsetProgress,
-        tire: startingTire, tireWear: 0, tireTemp: 84, tireAgeLaps: 0,
+        tire: startingTire,
+        compoundsUsed: [startingTire],
+        tireWear: 0, tireTemp: 84, tireAgeLaps: 0,
         fuelKg: startingFuelKg,
         paceMode: 'STANDARD', ersMode: 'BALANCED', battleStance: 'NEUTRAL', ersBattery: 100,
         drsActive: false, inDirtyAir: false, isBraking: false,
-        battleState: 'CLEAR', // CLEAR | SLIPSTREAM | DEFENDING | LATE_BRAKE | SWITCHBACK | LOCKUP | WIDE | SPIN
+        battleState: 'CLEAR',
         battleTimerSec: 0,
-        lateralOffset: idx % 2 === 0 ? -7 : 7,
+        lateralOffset: idx % 2 === 0 ? -10 : 10,
         spinAngle: 0,
         wingDamage: 0,
         trackLimitWarnings: 0,
         penaltySec: 0,
+        compoundViolation: false,
         overtakeFlashSec: 0,
-        mistakeCooldownSec: 10 + Math.random() * 14,
-        inPit: false, pitTimerSec: 0, pitRequested: false,
-        nextTire: startingTire,
+        mistakeCooldownSec: 12 + Math.random() * 14,
+        // Seamless 3-Phase Pit Lane State Machine
+        pitPhase: 'NONE', // 'NONE' | 'PIT_IN' | 'PIT_STOP' | 'PIT_OUT'
+        pitLaneRatio: 0,  // 0.0 (entry) -> 0.5 (box) -> 1.0 (exit)
+        pitStationaryTargetSec: 0,
+        pitStationaryElapsedSec: 0,
+        pitTotalElapsedSec: 0,
+        lastPitStopSec: null,
+        lastPitTotalSec: null,
+        inPit: false,
+        pitRequested: false,
+        nextTire: startingTire === 'SOFT' ? 'HARD' : startingTire === 'HARD' ? 'MEDIUM' : 'HARD',
         lastLapTimeSec: null, bestLapTimeSec: null, currentLapElapsedSec: 0,
         sectorTimes: [null, null, null],
         sectorColors: [null, null, null],
         personalBestSectors: [null, null, null],
-        gapToLeaderSec: idx * 0.35, intervalSec: idx === 0 ? 0 : 0.35,
+        gapToLeaderSec: idx * 0.45, intervalSec: idx === 0 ? 0 : 0.45,
         pitStopsCount: 0, dnf: false,
       };
     });
@@ -1214,15 +1148,17 @@
     return {
       roundNumber, track, elapsedSec: 0, weather: initialWeather, forecast,
       nextWeatherChangeSec: track.baseLapTimeSec * 4.5, trackWetness: initialWetness,
+      wetRaceOccurred: isWetStart, // If rain ever occurs, mandatory 2-dry-compound rule is waived (just like real open-wheel rules!)
       trackRubber: 55,
       flagStatus: 'GREEN',
       flagTimerSec: 0,
       safetyCarProgress: 0.04,
       redFlagCount: 0,
       sessionBestSectors: [null, null, null],
-      broadcastBanner: { text: `LIGHTS OUT AT ${track.name.toUpperCase()} — ${track.totalLaps} LAPS`, color: '#22c55e', timerSec: 5 },
+      broadcastBanner: { text: `LIGHTS OUT AT ${track.name.toUpperCase()} — MANDATORY 2 DRY COMPOUNDS`, color: '#22c55e', timerSec: 5 },
+      activePitCard: null, // { driverCode, teamColor, tire, stationarySec, totalSec, phase, wingSwap, penaltyServed }
       cars,
-      logs: [{ id: 'log-start', lap: 1, timeSec: 0, category: 'RACE', message: `LIGHTS OUT at ${track.name}! ${track.totalLaps} laps · Air ${track.airTempC}°C · ${initialWeather.replace('_', ' ')}.` }],
+      logs: [{ id: 'log-start', lap: 1, timeSec: 0, category: 'RACE', message: `LIGHTS OUT at ${track.name}! ${track.totalLaps} laps · Mandatory 2-compound rule active in dry conditions.` }],
       fastestLapDriverId: null, fastestLapTimeSec: null, finished: false,
     };
   }
@@ -1241,6 +1177,7 @@
     let forecast = [...prev.forecast];
     let nextWeatherChangeSec = prev.nextWeatherChangeSec;
     let trackWetness = prev.trackWetness;
+    let wetRaceOccurred = prev.wetRaceOccurred || trackWetness >= 22;
     let trackRubber = prev.trackRubber;
     let flagStatus = prev.flagStatus;
     let flagTimerSec = prev.flagTimerSec;
@@ -1250,6 +1187,13 @@
     const logs = [...prev.logs];
     let fastestLapDriverId = prev.fastestLapDriverId;
     let fastestLapTimeSec = prev.fastestLapTimeSec;
+    let activePitCard = prev.activePitCard;
+    if (activePitCard && activePitCard.holdTimerSec !== undefined) {
+      activePitCard = activePitCard.holdTimerSec > dtSec
+        ? { ...activePitCard, holdTimerSec: activePitCard.holdTimerSec - dtSec }
+        : null;
+    }
+
     let broadcastBanner = prev.broadcastBanner && prev.broadcastBanner.timerSec > 0
       ? { ...prev.broadcastBanner, timerSec: Math.max(0, prev.broadcastBanner.timerSec - dtSec) }
       : null;
@@ -1258,15 +1202,13 @@
     const leaderCar = prev.cars.find((c) => !c.dnf) || prev.cars[0];
     const currentLeaderLap = leaderCar ? leaderCar.lap : 1;
 
-    const setBanner = (text, color = '#f59e0b', duration = 4.2) => {
+    const setBanner = (text, color = '#f59e0b', duration = 4.0) => {
       broadcastBanner = { text, color, timerSec: duration };
     };
-
     const pushLog = (category, message, lap = currentLeaderLap) => {
       logs.unshift({ id: `log-${elapsedSec.toFixed(2)}-${Math.random().toString(36).slice(2, 6)}`, lap, timeSec: elapsedSec, category, message });
       if (logs.length > 90) logs.pop();
     };
-
     const emitFx = (item) => { if (fxQueue) fxQueue.push(item); };
 
     // Red Flag suspension
@@ -1277,18 +1219,16 @@
         events.flagChanged = true;
         emitFx({ type: 'CLEAR_DEBRIS' });
         setBanner('RED FLAG LIFTED — STANDING RESTART!', '#22c55e', 5);
-        pushLog('FLAG', 'RED FLAG LIFTED — Standing restart! Fresh tires & repaired wings across the grid.', currentLeaderLap);
+        pushLog('FLAG', 'RED FLAG LIFTED — Standing restart! Fresh tires & repaired wings.', currentLeaderLap);
       } else {
-        return { nextState: { ...prev, elapsedSec, flagStatus, flagTimerSec, broadcastBanner, logs }, events };
+        return { nextState: { ...prev, elapsedSec, flagStatus, flagTimerSec, broadcastBanner, activePitCard, logs }, events };
       }
     }
 
     // VSC / Safety Car countdown
     if (flagStatus === 'VSC' || flagStatus === 'SC') {
       flagTimerSec -= dtSec;
-      if (flagStatus === 'SC') {
-        safetyCarProgress = (safetyCarProgress + dtSec / (track.baseLapTimeSec * 1.38)) % 1;
-      }
+      if (flagStatus === 'SC') safetyCarProgress = (safetyCarProgress + dtSec / (track.baseLapTimeSec * 1.38)) % 1;
       if (flagTimerSec <= 0) {
         const endedFlag = flagStatus;
         flagStatus = 'GREEN';
@@ -1299,7 +1239,7 @@
       }
     }
 
-    // Dynamic weather evolution
+    // Weather evolution
     if (elapsedSec >= nextWeatherChangeSec) {
       const nextW = forecast.shift() || 'DRY';
       const tail = forecast[forecast.length - 1] || nextW;
@@ -1318,6 +1258,7 @@
     const wetRate = targetWet > trackWetness ? 1.45 : 0.75;
     if (trackWetness < targetWet) trackWetness = Math.min(targetWet, trackWetness + wetRate * dtSec);
     else if (trackWetness > targetWet) trackWetness = Math.max(targetWet, trackWetness - wetRate * dtSec);
+    if (trackWetness >= 22) wetRaceOccurred = true;
 
     if (trackWetness > 25) trackRubber = Math.max(12, trackRubber - dtSec * 0.42);
     else trackRubber = Math.min(100, trackRubber + dtSec * 0.14);
@@ -1335,16 +1276,17 @@
       const gridResetCars = prev.cars.map((c, idx) => {
         if (c.dnf) return c;
         const baseLap = Math.max(1, currentLeaderLap);
-        const gridProg = -0.005 * (idx + 1);
+        const gridProg = -0.0095 * (idx + 1);
+        const comps = c.compoundsUsed.includes('WET') ? c.compoundsUsed : [...c.compoundsUsed, 'WET'];
         return {
           ...c, lap: baseLap, lapProgress: gridProg, totalDistance: baseLap - 1 + gridProg,
-          tire: 'WET', tireWear: 0, tireAgeLaps: 0, wingDamage: 0, inPit: false, pitRequested: false,
-          battleState: 'CLEAR', spinAngle: 0, lateralOffset: idx % 2 === 0 ? -7 : 7,
+          tire: 'WET', compoundsUsed: comps, tireWear: 0, tireAgeLaps: 0, wingDamage: 0,
+          pitPhase: 'NONE', inPit: false, pitRequested: false,
+          battleState: 'CLEAR', spinAngle: 0, lateralOffset: idx % 2 === 0 ? -10 : 10,
         };
       });
-
       return {
-        nextState: { ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness, trackRubber, flagStatus, flagTimerSec, redFlagCount, broadcastBanner, cars: gridResetCars, logs },
+        nextState: { ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness, wetRaceOccurred: true, trackRubber, flagStatus, flagTimerSec, redFlagCount, broadcastBanner, activePitCard: null, cars: gridResetCars, logs },
         events,
       };
     }
@@ -1371,39 +1313,197 @@
       const team = teamMap.get(car.teamId);
       const driver = driverMap.get(car.driverId);
       const isPlayer = team.id === playerTeamId;
-      const wp = getWaypointAt(track, car.lapProgress);
-      const isBraking = wp.isBrakingZone && !car.inPit && flagStatus === 'GREEN';
-      const turnLabel = wp.turnNumber > 0 ? `Turn ${wp.turnNumber}` : 'the apex';
 
-      // Pit stop service (also serves pending 5s penalty & replaces broken wing)
-      if (car.inPit) {
-        const nextTimer = car.pitTimerSec - dtSec;
-        if (nextTimer <= 0) {
-          const refuelTarget = Math.min(110, Math.max(car.fuelKg, (track.totalLaps - car.lap + 1) * 2.15 + 3));
-          const repairedWing = car.wingDamage > 0;
+      // ----------------------------------------------------------------------
+      // SEAMLESS 3-PHASE PIT LANE DRIVING (PIT_IN -> PIT_STOP -> PIT_OUT)
+      // ----------------------------------------------------------------------
+      if (car.pitPhase !== 'NONE') {
+        const pitTotalElapsedSec = car.pitTotalElapsedSec + dtSec;
+        const currentLapElapsedSec = car.currentLapElapsedSec + dtSec;
+        const pitHalfSec = track.pitTransitHalfSec;
+        const entrySpan = 1.0 - track.pitEntryProgress; // 0.075
+        const exitSpan = track.pitExitProgress;         // 0.075
+
+        // Phase 1: Driving smoothly down Pit Entry into the Garage Box (ratio 0.0 -> 0.5)
+        if (car.pitPhase === 'PIT_IN') {
+          const nextRatio = car.pitLaneRatio + (dtSec / pitHalfSec) * 0.5;
+          if (nextRatio >= 0.5) {
+            // Reached Pit Box (crosses S/F line inside pits -> lap increments cleanly!)
+            const completedLapTime = Number(currentLapElapsedSec.toFixed(3));
+            const baseStopSec = Number((2.15 + Math.random() * 1.15).toFixed(2));
+            const wingExtra = car.wingDamage > 0 ? 5.2 : 0;
+            const penExtra = car.penaltySec > 0 ? car.penaltySec : 0;
+            const pitStationaryTargetSec = Number((baseStopSec + wingExtra + penExtra).toFixed(2));
+
+            if (isPlayer) {
+              events.pitStopSound = true;
+              activePitCard = {
+                driverCode: driver.code, driverName: driver.name, teamColor: team.primaryColor,
+                tire: car.nextTire, phase: 'PIT_STOP',
+                stationarySec: 0, stationaryTargetSec: pitStationaryTargetSec,
+                totalSec: pitTotalElapsedSec, wingSwap: car.wingDamage > 0, penaltyServed: penExtra,
+              };
+            }
+
+            return {
+              ...car,
+              pitPhase: 'PIT_STOP',
+              pitLaneRatio: 0.5,
+              pitStationaryTargetSec,
+              pitStationaryElapsedSec: 0,
+              pitTotalElapsedSec,
+              lap: car.lap + 1,
+              lapProgress: 0,
+              totalDistance: car.lap,
+              lastLapTimeSec: completedLapTime,
+              currentLapElapsedSec: 0,
+              drsActive: false, inDirtyAir: false, isBraking: false, battleState: 'CLEAR',
+            };
+          }
+
+          const mappedProg = track.pitEntryProgress + (nextRatio / 0.5) * entrySpan;
           if (isPlayer) {
-            events.radioAlert = true;
-            events.pitStopSound = true;
-            setBanner(`${driver.code} PIT EXIT ON FRESH ${car.nextTire} TIRES`, '#f59e0b', 3.5);
-            pushLog('PIT', `${driver.code} released on fresh ${car.nextTire} tires${repairedWing ? ' + new front wing' : ''}.`, car.lap);
+            activePitCard = {
+              driverCode: driver.code, driverName: driver.name, teamColor: team.primaryColor,
+              tire: car.nextTire, phase: 'PIT_IN',
+              stationarySec: 0, stationaryTargetSec: 0,
+              totalSec: pitTotalElapsedSec, wingSwap: car.wingDamage > 0, penaltyServed: car.penaltySec,
+            };
           }
           return {
-            ...car, inPit: false, pitTimerSec: 0, pitRequested: false, tire: car.nextTire,
-            tireWear: 0, tireAgeLaps: 0, tireTemp: 82, wingDamage: 0, penaltySec: 0,
-            fuelKg: refuelTarget, pitStopsCount: car.pitStopsCount + 1,
-            lapProgress: 0.015, totalDistance: car.lap - 1 + 0.015,
-            drsActive: false, inDirtyAir: false, battleState: 'CLEAR', spinAngle: 0,
+            ...car,
+            pitLaneRatio: nextRatio,
+            pitTotalElapsedSec,
+            lapProgress: mappedProg,
+            totalDistance: car.lap - 1 + mappedProg,
+            currentLapElapsedSec,
+            drsActive: false, inDirtyAir: false, isBraking: false,
           };
         }
-        return { ...car, pitTimerSec: nextTimer, currentLapElapsedSec: car.currentLapElapsedSec + dtSec, drsActive: false, inDirtyAir: false, isBraking: false };
+
+        // Phase 2: Stationary in Pit Box (Tires changed, Wing replaced, Penalty served)
+        if (car.pitPhase === 'PIT_STOP') {
+          const nextStatElapsed = car.pitStationaryElapsedSec + dtSec;
+          if (nextStatElapsed >= car.pitStationaryTargetSec) {
+            const refuelTarget = Math.min(110, Math.max(car.fuelKg, (track.totalLaps - car.lap + 1) * 2.15 + 3));
+            const newCompounds = car.compoundsUsed.includes(car.nextTire) ? car.compoundsUsed : [...car.compoundsUsed, car.nextTire];
+            const repairedWing = car.wingDamage > 0;
+            const servedPen = car.penaltySec;
+
+            if (isPlayer) {
+              events.radioAlert = true;
+              activePitCard = {
+                driverCode: driver.code, driverName: driver.name, teamColor: team.primaryColor,
+                tire: car.nextTire, phase: 'PIT_OUT',
+                stationarySec: car.pitStationaryTargetSec, stationaryTargetSec: car.pitStationaryTargetSec,
+                totalSec: pitTotalElapsedSec, wingSwap: repairedWing, penaltyServed: servedPen,
+              };
+            }
+
+            return {
+              ...car,
+              pitPhase: 'PIT_OUT',
+              pitLaneRatio: 0.5,
+              pitStationaryElapsedSec: car.pitStationaryTargetSec,
+              pitTotalElapsedSec,
+              lastPitStopSec: car.pitStationaryTargetSec,
+              tire: car.nextTire,
+              compoundsUsed: newCompounds,
+              tireWear: 0, tireAgeLaps: 0, tireTemp: 82,
+              wingDamage: 0, penaltySec: 0,
+              fuelKg: refuelTarget,
+              pitStopsCount: car.pitStopsCount + 1,
+              pitRequested: false,
+              currentLapElapsedSec,
+              drsActive: false, inDirtyAir: false, isBraking: false,
+            };
+          }
+
+          if (isPlayer) {
+            activePitCard = {
+              driverCode: driver.code, driverName: driver.name, teamColor: team.primaryColor,
+              tire: car.nextTire, phase: 'PIT_STOP',
+              stationarySec: nextStatElapsed, stationaryTargetSec: car.pitStationaryTargetSec,
+              totalSec: pitTotalElapsedSec, wingSwap: car.wingDamage > 0, penaltyServed: car.penaltySec,
+            };
+          }
+
+          return {
+            ...car,
+            pitStationaryElapsedSec: nextStatElapsed,
+            pitTotalElapsedSec,
+            currentLapElapsedSec,
+            drsActive: false, inDirtyAir: false, isBraking: false,
+          };
+        }
+
+        // Phase 3: Driving down Pit Exit back onto main track (ratio 0.5 -> 1.0 -> progress 0.075)
+        if (car.pitPhase === 'PIT_OUT') {
+          const nextRatio = car.pitLaneRatio + (dtSec / pitHalfSec) * 0.5;
+          if (nextRatio >= 1.0) {
+            const finalTotalSec = Number(pitTotalElapsedSec.toFixed(1));
+            const finalStopSec = Number((car.lastPitStopSec || 2.5).toFixed(2));
+            if (isPlayer) {
+              setBanner(`${driver.code} PIT EXIT — STOP ${finalStopSec}s | TOTAL PIT ${finalTotalSec}s`, '#22d3ee', 4.5);
+              pushLog('PIT', `${driver.code} rejoins on ${car.tire} — Stationary Stop: ${finalStopSec}s | Total Pit Lane: ${finalTotalSec}s.`, car.lap);
+              activePitCard = {
+                driverCode: driver.code, driverName: driver.name, teamColor: team.primaryColor,
+                tire: car.tire, phase: 'COMPLETE',
+                stationarySec: finalStopSec, stationaryTargetSec: finalStopSec,
+                totalSec: finalTotalSec, wingSwap: false, penaltyServed: 0,
+                holdTimerSec: 4.5,
+              };
+            } else if (car.position <= 6) {
+              pushLog('PIT', `${driver.code} exits pits on ${car.tire} (Stop ${finalStopSec}s · Total ${finalTotalSec}s).`, car.lap);
+            }
+
+            return {
+              ...car,
+              pitPhase: 'NONE',
+              inPit: false,
+              pitLaneRatio: 0,
+              lastPitTotalSec: finalTotalSec,
+              lapProgress: track.pitExitProgress,
+              totalDistance: car.lap - 1 + track.pitExitProgress,
+              lateralOffset: 0,
+              currentLapElapsedSec,
+            };
+          }
+
+          const mappedProg = ((nextRatio - 0.5) / 0.5) * exitSpan;
+          if (isPlayer) {
+            activePitCard = {
+              driverCode: driver.code, driverName: driver.name, teamColor: team.primaryColor,
+              tire: car.tire, phase: 'PIT_OUT',
+              stationarySec: car.lastPitStopSec || 2.5, stationaryTargetSec: car.lastPitStopSec || 2.5,
+              totalSec: pitTotalElapsedSec, wingSwap: false, penaltyServed: 0,
+            };
+          }
+          return {
+            ...car,
+            pitLaneRatio: nextRatio,
+            pitTotalElapsedSec,
+            lapProgress: mappedProg,
+            totalDistance: car.lap - 1 + mappedProg,
+            currentLapElapsedSec,
+            drsActive: false, inDirtyAir: false, isBraking: false,
+          };
+        }
       }
+
+      // ----------------------------------------------------------------------
+      // ON-TRACK RACING PHYSICS
+      // ----------------------------------------------------------------------
+      const wp = getWaypointAt(track, car.lapProgress);
+      const isBraking = wp.isBrakingZone && flagStatus === 'GREEN';
+      const turnLabel = wp.turnNumber > 0 ? `Turn ${wp.turnNumber}` : 'the apex';
 
       const aheadCar = aheadByDriverId.get(car.driverId);
       const behindCar = behindByDriverId.get(car.driverId);
       const gapAheadSec = aheadCar && !aheadCar.inPit ? Math.max(0, (aheadCar.totalDistance - car.totalDistance) * track.baseLapTimeSec) : 99;
       const gapBehindSec = behindCar && !behindCar.inPit ? Math.max(0, (car.totalDistance - behindCar.totalDistance) * track.baseLapTimeSec) : 99;
 
-      const inDirtyAir = flagStatus === 'GREEN' && gapAheadSec > 0.04 && gapAheadSec < 1.25;
+      const inDirtyAir = flagStatus === 'GREEN' && gapAheadSec > 0.04 && gapAheadSec < 1.3;
       const drsActive = drsPermitted && gapAheadSec <= 1.0 && isProgressInDrsZone(track, car.lapProgress);
 
       let ersMode = car.ersMode;
@@ -1411,22 +1511,11 @@
       let ersBattery = car.ersBattery;
 
       if (!isPlayer) {
-        if (flagStatus !== 'GREEN') {
-          ersMode = 'HARVEST';
-          battleStance = 'NEUTRAL';
-        } else if (gapAheadSec < 1.05 && ersBattery > 25) {
-          ersMode = 'OVERTAKE';
-          battleStance = driver.racecraft >= 84 ? 'AGGRESSIVE' : 'NEUTRAL';
-        } else if (gapBehindSec < 0.75 && ersBattery > 20) {
-          ersMode = 'OVERTAKE';
-          battleStance = 'DEFEND';
-        } else if (ersBattery < 28) {
-          ersMode = 'HARVEST';
-          battleStance = 'NEUTRAL';
-        } else {
-          ersMode = 'BALANCED';
-          battleStance = 'NEUTRAL';
-        }
+        if (flagStatus !== 'GREEN') { ersMode = 'HARVEST'; battleStance = 'NEUTRAL'; }
+        else if (gapAheadSec < 1.05 && ersBattery > 25) { ersMode = 'OVERTAKE'; battleStance = driver.racecraft >= 84 ? 'AGGRESSIVE' : 'NEUTRAL'; }
+        else if (gapBehindSec < 0.75 && ersBattery > 20) { ersMode = 'OVERTAKE'; battleStance = 'DEFEND'; }
+        else if (ersBattery < 28) { ersMode = 'HARVEST'; battleStance = 'NEUTRAL'; }
+        else { ersMode = 'BALANCED'; battleStance = 'NEUTRAL'; }
       }
 
       const lapFractionEst = dtSec / track.baseLapTimeSec;
@@ -1439,13 +1528,12 @@
         ersBattery = Math.min(100, Math.max(0, ersBattery + lapFractionEst * 4));
       }
 
-      // Tire Temperature Physics
       const tireSpec = TIRE_SPECS[car.tire];
       const paceHeatTarget = car.paceMode === 'ATTACK' ? 114 : car.paceMode === 'CONSERVE' ? 84 : 96;
       const wetCooling = trackWetness * 0.24;
       const scCooling = flagStatus !== 'GREEN' ? 16 : 0;
       const dirtyAirHeat = inDirtyAir ? 5.5 : 0;
-      const dryWetCompoundHeat = (car.tire === 'INTER' || car.tire === 'WET') && trackWetness < 14 ? 26 : 0;
+      const dryWetCompoundHeat = !tireSpec.isDry && trackWetness < 14 ? 26 : 0;
       const targetTemp = Math.max(52, Math.min(136, paceHeatTarget + (track.airTempC - 22) * 0.5 + dirtyAirHeat + dryWetCompoundHeat - wetCooling - scCooling));
       const tireTemp = car.tireTemp + (targetTemp - car.tireTemp) * Math.min(1, dtSec * 0.08);
 
@@ -1453,7 +1541,7 @@
       if (tireTemp < tireSpec.optTempMin) tempDeltaSec = (tireSpec.optTempMin - tireTemp) * 0.045;
       else if (tireTemp > tireSpec.optTempMax) tempDeltaSec = (tireTemp - tireSpec.optTempMax) * 0.055;
 
-      // Wheel-to-Wheel Battle & Mistake State Machine
+      // Wheel-to-Wheel Maneuvers & Mistakes
       let battleState = car.battleState;
       let battleTimerSec = Math.max(0, car.battleTimerSec - dtSec);
       let spinAngle = car.spinAngle;
@@ -1473,27 +1561,25 @@
       if (battleState === 'SPIN') {
         extraSpeedPenaltySec += 18.0;
         spinAngle += dtSec * 8.2;
-        const pose = sampleTrackPose(track, car.lapProgress, false, 0, car.lateralOffset);
+        const pose = sampleTrackPose(track, car.lapProgress, 'NONE', 0, car.lateralOffset);
         emitFx({ type: 'SMOKE', x: pose.x, y: pose.y, count: 2 });
       } else if (battleState === 'LOCKUP') {
         extraSpeedPenaltySec += 3.8;
-        const pose = sampleTrackPose(track, car.lapProgress, false, 0, car.lateralOffset);
+        const pose = sampleTrackPose(track, car.lapProgress, 'NONE', 0, car.lateralOffset);
         emitFx({ type: 'SMOKE', x: pose.x, y: pose.y, count: 2 });
         emitFx({ type: 'SKID', x: pose.x, y: pose.y, angle: pose.angle });
       } else if (battleState === 'WIDE') {
-        extraSpeedPenaltySec += 4.6;
+        extraSpeedPenaltySec += 4.5;
       } else if (flagStatus === 'GREEN' && car.lap >= 1) {
-        // Active Line Defense
-        if (gapBehindSec < 0.68 && behindCar && !behindCar.inPit) {
-          const defendAggression = battleStance === 'DEFEND' ? 1.0 : battleStance === 'NEUTRAL' ? 0.55 : 0.25;
-          if (Math.random() < defendAggression * dtSec * 1.4 && battleState !== 'DEFENDING') {
+        if (gapBehindSec < 0.72 && behindCar && !behindCar.inPit) {
+          const defendAgg = battleStance === 'DEFEND' ? 1.0 : battleStance === 'NEUTRAL' ? 0.55 : 0.25;
+          if (Math.random() < defendAgg * dtSec * 1.4 && battleState !== 'DEFENDING') {
             battleState = 'DEFENDING';
             battleTimerSec = 2.6;
           }
         }
 
-        // Late-Braking Divebomb or Switchback Attack
-        if (gapAheadSec < 0.72 && aheadCar && !aheadCar.inPit && battleState !== 'LATE_BRAKE' && battleState !== 'SWITCHBACK') {
+        if (gapAheadSec < 0.78 && aheadCar && !aheadCar.inPit && battleState !== 'LATE_BRAKE' && battleState !== 'SWITCHBACK') {
           if (isBraking) {
             const attackBias = battleStance === 'AGGRESSIVE' ? 1.55 : battleStance === 'DEFEND' ? 0.45 : 1.0;
             const skillEdge = (driver.racecraft - 75) / 40;
@@ -1501,7 +1587,7 @@
               const aheadDefending = aheadCar.battleState === 'DEFENDING';
               battleState = aheadDefending ? 'SWITCHBACK' : 'LATE_BRAKE';
               battleTimerSec = 2.4;
-              const pose = sampleTrackPose(track, car.lapProgress, false, 0, car.lateralOffset);
+              const pose = sampleTrackPose(track, car.lapProgress, 'NONE', 0, car.lateralOffset);
               emitFx({ type: 'SPARK', x: pose.x, y: pose.y, count: 5 });
 
               if (isPlayer || aheadCar.teamId === playerTeamId || car.position <= 6) {
@@ -1513,26 +1599,19 @@
                   aheadDefending ? '#38bdf8' : '#22c55e',
                   3.2
                 );
-                pushLog(
-                  'BATTLE',
-                  aheadDefending
-                    ? `${driver.code} executes a switchback underneath ${targetCode} at ${turnLabel}!`
-                    : `${driver.code} sends a late-braking lunge on ${targetCode} into ${turnLabel}!`,
-                  car.lap
-                );
+                pushLog('BATTLE', aheadDefending ? `${driver.code} cuts underneath ${targetCode} at ${turnLabel}!` : `${driver.code} lunges late on the brakes past ${targetCode} at ${turnLabel}!`, car.lap);
               }
 
-              // Wheel-to-wheel collision check
-              const clashRisk = (battleStance === 'AGGRESSIVE' ? 0.065 : 0.022) * (aheadCar.battleStance === 'DEFEND' ? 1.65 : 1.0);
+              const clashRisk = (battleStance === 'AGGRESSIVE' ? 0.06 : 0.02) * (aheadCar.battleStance === 'DEFEND' ? 1.6 : 1.0);
               if (Math.random() < clashRisk && mistakeCooldownSec <= 0) {
                 wingDamage = Math.min(2, wingDamage + 1);
                 penaltySec += 5;
-                mistakeCooldownSec = 20;
+                mistakeCooldownSec = 22;
                 events.crashImpact = true;
                 emitFx({ type: 'SPARK', x: pose.x, y: pose.y, count: 16 });
                 emitFx({ type: 'DEBRIS', x: pose.x, y: pose.y, count: 7 });
                 setBanner(`CONTACT AT ${turnLabel.toUpperCase()}! ${driver.code} WING DMG (+5s PEN)`, '#ef4444', 4.5);
-                pushLog('INCIDENT', `CONTACT at ${turnLabel}! ${driver.code} clips ${driverMap.get(aheadCar.driverId).code} — Wing Damage & +5s Steward Penalty!`, car.lap);
+                pushLog('INCIDENT', `CONTACT at ${turnLabel}! ${driver.code} clips ${driverMap.get(aheadCar.driverId).code} — Wing Damage & +5s Penalty.`, car.lap);
               }
             }
           } else if (gapAheadSec < 0.95) {
@@ -1546,30 +1625,30 @@
         if (battleState === 'SWITCHBACK') extraAttackBoostSec += 1.3;
         if (battleState === 'DEFENDING') extraSpeedPenaltySec += 0.22;
 
-        // Driver Mistakes: Lock-Up, Running Wide (+Track Limits), Spin, Barrier Crash
+        // Driver Mistakes (Lock-up, Wide, Spin/Crash)
         if (mistakeCooldownSec <= 0 && !['LOCKUP', 'WIDE', 'SPIN'].includes(battleState)) {
-          const wearRisk = car.tireWear > 68 ? (car.tireWear - 65) * 0.0012 : 0;
+          const wearRisk = car.tireWear > 68 ? (car.tireWear - 65) * 0.0014 : 0;
           const heatRisk = tireTemp > tireSpec.optTempMax + 6 ? 0.012 : tireTemp < tireSpec.optTempMin - 10 ? 0.01 : 0;
           const wetRisk = trackWetness > 45 ? ((100 - driver.wetSkill) / 100) * 0.018 : 0;
           const modeRisk = car.paceMode === 'ATTACK' ? 0.008 : car.paceMode === 'CONSERVE' ? -0.004 : 0;
-          const consistencyBase = ((100 - driver.consistency) / 100) * 0.013;
+          const consistencyBase = ((100 - driver.consistency) / 100) * 0.012;
           const totalMistakeRate = Math.max(0.0015, consistencyBase + wearRisk + heatRisk + wetRisk + modeRisk);
 
           if (Math.random() < totalMistakeRate * dtSec * (isBraking || wp.curvature > 0.13 ? 3.0 : 0.4)) {
             mistakeCooldownSec = 18 + Math.random() * 14;
-            const pose = sampleTrackPose(track, car.lapProgress, false, 0, car.lateralOffset);
+            const pose = sampleTrackPose(track, car.lapProgress, 'NONE', 0, car.lateralOffset);
             const roll = Math.random();
 
             if (isBraking && roll < 0.52) {
               battleState = 'LOCKUP';
               battleTimerSec = 1.9;
-              tireWearBump += 3.2;
+              tireWearBump += 3.5;
               events.tireScreech = true;
               emitFx({ type: 'SMOKE', x: pose.x, y: pose.y, count: 12 });
               emitFx({ type: 'SKID', x: pose.x, y: pose.y, angle: pose.angle });
               if (isPlayer || car.position <= 6) {
                 setBanner(`${driver.code} LOCKS UP INTO ${turnLabel.toUpperCase()}!`, '#fb923c', 3.0);
-                pushLog('MISTAKE', `${driver.code} locks the front brakes into ${turnLabel} (+3% flat-spot wear).`, car.lap);
+                pushLog('MISTAKE', `${driver.code} locks the front brakes into ${turnLabel} (+3.5% flat-spot).`, car.lap);
               }
             } else if (roll < 0.86) {
               battleState = 'WIDE';
@@ -1581,15 +1660,15 @@
                 trackLimitWarnings = 0;
                 if (isPlayer || car.position <= 8) {
                   setBanner(`STEWARDS: +5s TRACK LIMITS PENALTY FOR ${driver.code}`, '#ef4444', 4.0);
-                  pushLog('INCIDENT', `STEWARDS: ${driver.code} receives +5s Time Penalty for repeated track-limit breaches!`, car.lap);
+                  pushLog('INCIDENT', `STEWARDS: ${driver.code} receives +5s Time Penalty for track limits!`, car.lap);
                 }
               } else if (isPlayer || car.position <= 6) {
-                pushLog('MISTAKE', `${driver.code} runs wide at ${turnLabel} (Track Limit Warning ${trackLimitWarnings}/3).`, car.lap);
+                pushLog('MISTAKE', `${driver.code} runs wide at ${turnLabel} (Warning ${trackLimitWarnings}/3).`, car.lap);
               }
             } else {
               battleState = 'SPIN';
               battleTimerSec = 2.8;
-              tireWearBump += 4.5;
+              tireWearBump += 5.0;
               events.tireScreech = true;
               emitFx({ type: 'SMOKE', x: pose.x, y: pose.y, count: 18 });
               emitFx({ type: 'SKID', x: pose.x, y: pose.y, angle: pose.angle });
@@ -1600,39 +1679,35 @@
                 events.crashImpact = true;
                 emitFx({ type: 'SPARK', x: pose.x, y: pose.y, count: 22 });
                 emitFx({ type: 'DEBRIS', x: pose.x, y: pose.y, count: 12 });
-                pushLog('INCIDENT', `HEAVY CRASH at ${turnLabel}! ${driver.code} (${team.shortName}) impacts the barrier — OUT!`, car.lap);
+                pushLog('INCIDENT', `HEAVY CRASH at ${turnLabel}! ${driver.code} (${team.shortName}) hits the barrier — OUT!`, car.lap);
 
                 if (flagStatus === 'GREEN' && !incidentTriggeredThisTick) {
                   incidentTriggeredThisTick = true;
-                  if (redFlagCount === 0 && Math.random() < 0.36) {
+                  if (redFlagCount === 0 && Math.random() < 0.35) {
                     flagStatus = 'RED_FLAG';
                     flagTimerSec = 14;
                     redFlagCount += 1;
                     events.flagChanged = true;
                     events.isRedFlag = true;
                     setBanner(`RED FLAG — ${driver.code} CRASH AT ${turnLabel.toUpperCase()}`, '#dc2626', 8);
-                    pushLog('FLAG', `RED FLAG! Barrier damage at ${turnLabel} from ${driver.code}'s crash.`, car.lap);
+                    pushLog('FLAG', `RED FLAG! Barrier repair needed at ${turnLabel}.`, car.lap);
                   } else {
                     flagStatus = 'SC';
                     flagTimerSec = track.baseLapTimeSec * 2.2;
                     safetyCarProgress = (car.lapProgress + 0.06) % 1;
                     events.flagChanged = true;
                     setBanner(`SAFETY CAR DEPLOYED — ${driver.code} CRASH`, '#eab308', 6);
-                    pushLog('FLAG', `SAFETY CAR DEPLOYED — Marshals recovering ${driver.code}'s chassis at ${turnLabel}.`, car.lap);
+                    pushLog('FLAG', `SAFETY CAR DEPLOYED — Clearing ${driver.code}'s chassis at ${turnLabel}.`, car.lap);
                   }
                 }
-
-                return {
-                  ...car, dnf: true, dnfReason: `Crash (${turnLabel})`, battleState: 'SPIN',
-                  drsActive: false, inDirtyAir: false, isBraking: false,
-                };
+                return { ...car, dnf: true, dnfReason: `Crash (${turnLabel})`, battleState: 'SPIN', drsActive: false, inDirtyAir: false, isBraking: false };
               }
             }
           }
         }
       }
 
-      // Lap Time Calculation
+      // Distance-Scaled Tire Wear & Severe Cliff Physics (No more 0-stop Hard cheese!)
       const demandSum = track.aeroDemand + track.powerDemand + track.chassisDemand;
       const weightedCar = (team.car.aero * track.aeroDemand + team.car.powertrain * track.powerDemand + team.car.chassis * track.chassisDemand) / demandSum;
       const carDeltaSec = (75 - weightedCar) * 0.085;
@@ -1641,8 +1716,12 @@
       const effectiveSkill = driver.pace * (1 - wetBlend) + driver.wetSkill * wetBlend;
       const driverDeltaSec = (80 - effectiveSkill) * 0.065;
 
-      const wearCliff = car.tireWear > 72 ? Math.pow((car.tireWear - 72) / 10, 1.85) * 1.4 : (car.tireWear / 100) * 1.35;
-      const compoundDeltaSec = (1.02 - tireSpec.baseGrip) * 42 + wearCliff + tempDeltaSec;
+      // Tire cliff ramps aggressively above 70% wear (dead tires lose +5s to +9s/lap!)
+      const wearCliff =
+        car.tireWear > 70
+          ? 1.5 + Math.pow((car.tireWear - 70) / 8.5, 1.95) * 1.65
+          : (car.tireWear / 70) * 1.5;
+      const compoundDeltaSec = (1.032 - tireSpec.baseGrip) * 40 + wearCliff + tempDeltaSec;
 
       let weatherMismatchSec = 0;
       if (trackWetness < tireSpec.optimalWetMin) weatherMismatchSec = (tireSpec.optimalWetMin - trackWetness) * 0.14;
@@ -1654,11 +1733,11 @@
       const ersDeltaSec = ersMode === 'OVERTAKE' && ersBattery > 2 ? -0.68 : ersMode === 'HARVEST' ? 0.45 : 0;
       const drsDeltaSec = drsActive ? -0.82 : 0;
 
-      const aheadBlockingSec = aheadCar && aheadCar.battleState === 'DEFENDING' && gapAheadSec < 0.45 && battleState !== 'SWITCHBACK' ? 0.68 : 0;
+      const aheadBlockingSec = aheadCar && aheadCar.battleState === 'DEFENDING' && gapAheadSec < 0.48 && battleState !== 'SWITCHBACK' ? 0.68 : 0;
       const dirtyAirDeltaSec = inDirtyAir ? (0.42 * track.overtakeDifficulty * (1 - team.car.aero / 160)) + aheadBlockingSec : 0;
       const wingDamagePenalty = wingDamage === 2 ? 2.4 : wingDamage === 1 ? 0.9 : 0;
       const outOfFuelPenalty = car.fuelKg <= 0.1 ? 9.5 : 0;
-      const jitter = ((100 - driver.consistency) / 100) * (Math.random() - 0.5) * 0.26;
+      const jitter = ((100 - driver.consistency) / 100) * (Math.random() - 0.5) * 0.24;
 
       let effectiveLapTime = Math.max(
         track.baseLapTimeSec * 0.78,
@@ -1672,7 +1751,7 @@
       } else if (flagStatus === 'SC') {
         const targetScLapTime = track.baseLapTimeSec * 1.38;
         if (car.position === 1) effectiveLapTime = targetScLapTime;
-        else if (gapAheadSec > 0.65) effectiveLapTime = track.baseLapTimeSec * 1.15;
+        else if (gapAheadSec > 0.75) effectiveLapTime = track.baseLapTimeSec * 1.15;
         else effectiveLapTime = targetScLapTime * 1.01;
       }
 
@@ -1687,95 +1766,91 @@
       const sectorTimes = [...car.sectorTimes];
       const sectorColors = [...car.sectorColors];
       const personalBestSectors = [...car.personalBestSectors];
+      let pitPhase = 'NONE';
+      let pitLaneRatio = 0;
       let inPit = false;
-      let pitTimerSec = 0;
       let pitRequested = car.pitRequested;
       let nextTire = car.nextTire;
       let paceMode = car.paceMode;
       let dnf = false;
       let dnfReason;
 
-      // Live Sector 1 & Sector 2 timing splits
+      // Sector split timings
       if (prevProgress >= 0 && prevProgress < track.sectorSplits[0] && newProgress >= track.sectorSplits[0]) {
         const s1 = Number(currentLapElapsedSec.toFixed(3));
         sectorTimes[0] = s1;
-        if (flagStatus === 'GREEN' && (sessionBestSectors[0] === null || s1 < sessionBestSectors[0])) {
-          sessionBestSectors[0] = s1;
-          sectorColors[0] = 'PURPLE';
-        } else if (personalBestSectors[0] === null || s1 < personalBestSectors[0]) {
-          sectorColors[0] = 'GREEN';
-        } else {
-          sectorColors[0] = 'YELLOW';
-        }
+        if (flagStatus === 'GREEN' && (sessionBestSectors[0] === null || s1 < sessionBestSectors[0])) { sessionBestSectors[0] = s1; sectorColors[0] = 'PURPLE'; }
+        else if (personalBestSectors[0] === null || s1 < personalBestSectors[0]) sectorColors[0] = 'GREEN';
+        else sectorColors[0] = 'YELLOW';
         if (personalBestSectors[0] === null || s1 < personalBestSectors[0]) personalBestSectors[0] = s1;
       }
       if (prevProgress >= 0 && prevProgress < track.sectorSplits[1] && newProgress >= track.sectorSplits[1]) {
         const s2 = Number((currentLapElapsedSec - (sectorTimes[0] || currentLapElapsedSec * 0.33)).toFixed(3));
         sectorTimes[1] = s2;
-        if (flagStatus === 'GREEN' && (sessionBestSectors[1] === null || s2 < sessionBestSectors[1])) {
-          sessionBestSectors[1] = s2;
-          sectorColors[1] = 'PURPLE';
-        } else if (personalBestSectors[1] === null || s2 < personalBestSectors[1]) {
-          sectorColors[1] = 'GREEN';
-        } else {
-          sectorColors[1] = 'YELLOW';
-        }
+        if (flagStatus === 'GREEN' && (sessionBestSectors[1] === null || s2 < sessionBestSectors[1])) { sessionBestSectors[1] = s2; sectorColors[1] = 'PURPLE'; }
+        else if (personalBestSectors[1] === null || s2 < personalBestSectors[1]) sectorColors[1] = 'GREEN';
+        else sectorColors[1] = 'YELLOW';
         if (personalBestSectors[1] === null || s2 < personalBestSectors[1]) personalBestSectors[1] = s2;
       }
 
-      // Sparks & wet spray FX
-      if (flagStatus === 'GREEN' && !car.inPit) {
-        if (trackWetness > 25 && Math.random() < 0.28) {
-          const pose = sampleTrackPose(track, car.lapProgress, false, 0, car.lateralOffset);
+      // Sparks & Wet Spray
+      if (flagStatus === 'GREEN') {
+        if (trackWetness > 25 && Math.random() < 0.25) {
+          const pose = sampleTrackPose(track, car.lapProgress, 'NONE', 0, car.lateralOffset);
           emitFx({ type: 'SPRAY', x: pose.x, y: pose.y, angle: pose.angle });
-        } else if (wp.curvature < 0.035 && Math.random() < 0.04) {
-          const pose = sampleTrackPose(track, car.lapProgress, false, 0, car.lateralOffset);
+        } else if (wp.curvature < 0.035 && Math.random() < 0.035) {
+          const pose = sampleTrackPose(track, car.lapProgress, 'NONE', 0, car.lateralOffset);
           emitFx({ type: 'SPARK', x: pose.x, y: pose.y, count: 2 });
         }
       }
 
-      const neutralMult = flagStatus === 'GREEN' ? 1.0 : 0.35;
+      // Distance-Scaled Wear Accumulation
+      const degPerLap = getTireDegPerLap(car.tire, track);
+      const neutralMult = flagStatus === 'GREEN' ? 1.0 : 0.32;
       const paceWearMult = paceMode === 'ATTACK' ? 1.28 : paceMode === 'CONSERVE' ? 0.78 : 1.0;
-      const mgmtFactor = 1.25 - (driver.tireManagement / 100) * 0.45;
+      const mgmtFactor = 1.22 - (driver.tireManagement / 100) * 0.42;
       const heatWearMult = tireTemp > tireSpec.optTempMax + 4 ? 1.35 : 1.0;
-      const dryOverheatMult = (car.tire === 'INTER' || car.tire === 'WET') && trackWetness < 15 ? 2.1 : 1.0;
+      const dryOverheatMult = !tireSpec.isDry && trackWetness < 15 ? 2.2 : 1.0;
 
-      const tireWear = Math.min(100, car.tireWear + tireWearBump + progressDelta * tireSpec.degPerLap * track.tireAbrasion * paceWearMult * mgmtFactor * heatWearMult * dryOverheatMult * neutralMult);
+      const tireWear = Math.min(100, car.tireWear + tireWearBump + progressDelta * degPerLap * paceWearMult * mgmtFactor * heatWearMult * dryOverheatMult * neutralMult);
       const fuelBurnMult = (paceMode === 'ATTACK' ? 1.14 : paceMode === 'CONSERVE' ? 0.86 : 1.0) * neutralMult;
       const fuelKg = Math.max(0, car.fuelKg - progressDelta * 2.05 * fuelBurnMult);
 
-      // AI Pit Strategy
+      // AI Pit Strategy (Respects Mandatory 2-Compound Dry Rule + Wear Cliff + SC Stops)
       if (!isPlayer) {
         const remainingLaps = track.totalLaps - newLap;
+        const usedDryCount = car.compoundsUsed.filter((c) => TIRE_SPECS[c]?.isDry).length;
+        const mustPitForRule = !wetRaceOccurred && usedDryCount < 2 && remainingLaps <= Math.max(3, Math.round(track.totalLaps * 0.22));
         const wrongTireForRain =
-          (trackWetness >= 26 && ['SOFT', 'MEDIUM', 'HARD'].includes(car.tire)) ||
+          (trackWetness >= 26 && tireSpec.isDry) ||
           (trackWetness >= 68 && car.tire === 'INTER') ||
-          (trackWetness <= 14 && ['INTER', 'WET'].includes(car.tire));
-        const scCheapStop = (flagStatus === 'SC' || flagStatus === 'VSC') && tireWear >= 44 && remainingLaps >= 4;
+          (trackWetness <= 14 && !tireSpec.isDry);
+        const scCheapStop = (flagStatus === 'SC' || flagStatus === 'VSC') && (tireWear >= 40 || mustPitForRule) && remainingLaps >= 3;
         const wingRepairStop = wingDamage >= 2 && remainingLaps >= 3;
 
-        if (!pitRequested && remainingLaps >= 2 && (tireWear >= 74 || wrongTireForRain || scCheapStop || wingRepairStop)) {
+        if (!pitRequested && remainingLaps >= 2 && (tireWear >= 71 || wrongTireForRain || scCheapStop || wingRepairStop || mustPitForRule)) {
           pitRequested = true;
-          nextTire = chooseOptimalTireForWetness(trackWetness, remainingLaps);
+          nextTire = chooseOptimalTireForWetness(trackWetness, remainingLaps, track.totalLaps, car.compoundsUsed, car.tire);
         }
-        if (flagStatus !== 'GREEN' || tireWear > 65 || tireTemp > tireSpec.optTempMax + 6) paceMode = 'CONSERVE';
+        if (flagStatus !== 'GREEN' || tireWear > 62 || tireTemp > tireSpec.optTempMax + 6) paceMode = 'CONSERVE';
         else if (remainingLaps <= 5 && tireWear < 55 && fuelKg > remainingLaps * 2.2) paceMode = 'ATTACK';
         else paceMode = 'STANDARD';
       }
 
-      if (pitRequested && prevProgress < 0.96 && newProgress >= 0.96 && newLap < track.totalLaps) {
+      // SEAMLESS PIT ENTRY TRIGGER AT EXACT pitEntryProgress (0.925)!
+      if (pitRequested && prevProgress < track.pitEntryProgress && newProgress >= track.pitEntryProgress && newLap < track.totalLaps) {
+        pitPhase = 'PIT_IN';
         inPit = true;
-        const wingExtra = wingDamage > 0 ? 5.5 : 0;
-        const penExtra = penaltySec > 0 ? penaltySec : 0;
-        pitTimerSec = track.pitLossSec + wingExtra + penExtra + (Math.random() - 0.5) * 1.0;
+        pitLaneRatio = 0.0;
+        newProgress = track.pitEntryProgress;
         if (isPlayer) {
           events.radioAlert = true;
-          events.pitStopSound = true;
-          pushLog('PIT', `${driver.code} boxing for ${nextTire}${wingExtra > 0 ? ' + Wing' : ''}${penExtra > 0 ? ` + ${penExtra}s Pen` : ''}.`, newLap);
+          pushLog('PIT', `${driver.code} turns smoothly into pit entry for ${nextTire} tires.`, newLap);
         }
       }
 
-      if (prevProgress < 1.0 && newProgress >= 1.0) {
+      // Normal Lap Completion (when NOT pitting)
+      if (pitPhase === 'NONE' && prevProgress < 1.0 && newProgress >= 1.0) {
         const completedLaps = Math.floor(newProgress);
         newProgress -= completedLaps;
         if (prevProgress >= 0) {
@@ -1783,14 +1858,9 @@
           lastLapTimeSec = Number((currentLapElapsedSec / completedLaps).toFixed(3));
           const s3 = Number((lastLapTimeSec - (sectorTimes[0] || lastLapTimeSec * 0.33) - (sectorTimes[1] || lastLapTimeSec * 0.34)).toFixed(3));
           sectorTimes[2] = s3;
-          if (flagStatus === 'GREEN' && (sessionBestSectors[2] === null || s3 < sessionBestSectors[2])) {
-            sessionBestSectors[2] = s3;
-            sectorColors[2] = 'PURPLE';
-          } else if (personalBestSectors[2] === null || s3 < personalBestSectors[2]) {
-            sectorColors[2] = 'GREEN';
-          } else {
-            sectorColors[2] = 'YELLOW';
-          }
+          if (flagStatus === 'GREEN' && (sessionBestSectors[2] === null || s3 < sessionBestSectors[2])) { sessionBestSectors[2] = s3; sectorColors[2] = 'PURPLE'; }
+          else if (personalBestSectors[2] === null || s3 < personalBestSectors[2]) sectorColors[2] = 'GREEN';
+          else sectorColors[2] = 'YELLOW';
           if (personalBestSectors[2] === null || s3 < personalBestSectors[2]) personalBestSectors[2] = s3;
 
           if (bestLapTimeSec === null || lastLapTimeSec < bestLapTimeSec) bestLapTimeSec = lastLapTimeSec;
@@ -1800,23 +1870,25 @@
           }
           if (isPlayer) events.playerLapCompleted = true;
 
+          // Mechanical Reliability & Blown Tire Puncture Check (>96% wear!)
           const attackStress = paceMode === 'ATTACK' ? 1.8 : 1.0;
-          const failureProb = ((102 - team.car.reliability) / 100) * 0.0019 * attackStress * completedLaps;
-          if (newLap > 2 && newLap < track.totalLaps && Math.random() < failureProb) {
+          const failureProb = ((102 - team.car.reliability) / 100) * 0.0018 * attackStress * completedLaps;
+          const punctureProb = tireWear >= 96 ? 0.35 : 0;
+          if (newLap > 2 && newLap < track.totalLaps && Math.random() < failureProb + punctureProb) {
             dnf = true;
-            dnfReason = 'Power Unit Failure';
+            dnfReason = tireWear >= 96 ? 'Tire Blowout' : 'Power Unit Failure';
             events.radioAlert = isPlayer;
-            const pose = sampleTrackPose(track, newProgress, false, 0, car.lateralOffset);
+            const pose = sampleTrackPose(track, newProgress, 'NONE', 0, car.lateralOffset);
             emitFx({ type: 'SMOKE', x: pose.x, y: pose.y, count: 16 });
-            setBanner(`${driver.code} RETIRED — POWER UNIT FAILURE`, '#ef4444', 4.5);
-            pushLog('INCIDENT', `${driver.code} (${team.shortName}) smokes out: ${dnfReason}!`, newLap);
+            setBanner(`${driver.code} RETIRED — ${dnfReason.toUpperCase()}`, '#ef4444', 4.5);
+            pushLog('INCIDENT', `${driver.code} (${team.shortName}) OUT: ${dnfReason}!`, newLap);
 
             if (flagStatus === 'GREEN' && !incidentTriggeredThisTick) {
               incidentTriggeredThisTick = true;
               flagStatus = 'VSC';
               flagTimerSec = track.baseLapTimeSec * 1.4;
               events.flagChanged = true;
-              pushLog('FLAG', `VIRTUAL SAFETY CAR — Marshals clearing ${driver.code}'s stopped car.`, newLap);
+              pushLog('FLAG', `VIRTUAL SAFETY CAR — Marshals clearing ${driver.code}'s car.`, newLap);
             }
           }
         }
@@ -1824,14 +1896,14 @@
         currentLapElapsedSec = 0;
       }
 
-      // Expanded Track Lateral Line Choreography (wider 38px ribbon -> dramatic visible moves!)
+      // Dynamic Lateral Racing-Line Separation (Wide 44px Asphalt Ribbon)
       let targetLateral = 0;
-      if (battleState === 'WIDE') targetLateral = 19.5;
-      else if (battleState === 'DEFENDING') targetLateral = -11.0;
-      else if (battleState === 'LATE_BRAKE') targetLateral = -12.5;
-      else if (battleState === 'SWITCHBACK') targetLateral = 11.5;
-      else if (car.overtakeFlashSec > 0) targetLateral = 10.0;
-      else if (gapAheadSec < 0.9 && !inPit) targetLateral = aheadCar && aheadCar.lateralOffset < -4 ? 9.5 : -8.5;
+      if (battleState === 'WIDE') targetLateral = 21.0;
+      else if (battleState === 'DEFENDING') targetLateral = -12.5;
+      else if (battleState === 'LATE_BRAKE') targetLateral = -13.5;
+      else if (battleState === 'SWITCHBACK') targetLateral = 13.0;
+      else if (car.overtakeFlashSec > 0) targetLateral = 11.5;
+      else if (gapAheadSec < 0.95) targetLateral = aheadCar && aheadCar.lateralOffset < -4 ? 11.0 : -10.5;
 
       const lateralOffset = car.lateralOffset + (targetLateral - car.lateralOffset) * Math.min(1, dtSec * 5.2);
       const overtakeFlashSec = Math.max(0, car.overtakeFlashSec - dtSec);
@@ -1842,14 +1914,55 @@
         drsActive, inDirtyAir, isBraking, battleState, battleTimerSec,
         lateralOffset, spinAngle, wingDamage, trackLimitWarnings, penaltySec,
         overtakeFlashSec, mistakeCooldownSec,
-        inPit, pitTimerSec, pitRequested, nextTire,
+        pitPhase, pitLaneRatio, inPit, pitRequested, nextTire,
+        pitTotalElapsedSec: pitPhase === 'PIT_IN' ? 0 : car.pitTotalElapsedSec,
         lastLapTimeSec, bestLapTimeSec, currentLapElapsedSec,
         sectorTimes, sectorColors, personalBestSectors, dnf, dnfReason,
       };
     });
 
-    // Sort classification (apply unserved time penalties when race finishes!)
+    // ANTI-STACKING PHYSICAL CAR SPACING:
+    // Prevent cars on the same lateral lane from phasing inside each other's chassis!
+    const onTrackOrdered = updatedCars
+      .filter((c) => !c.dnf && !c.inPit)
+      .sort((a, b) => b.totalDistance - a.totalDistance);
+
+    const minSameLaneGap = 0.0068; // ~1.4 car lengths on 1600x920 circuit
+    for (let i = 1; i < onTrackOrdered.length; i++) {
+      const lead = onTrackOrdered[i - 1];
+      const trail = onTrackOrdered[i];
+      const distGap = lead.totalDistance - trail.totalDistance;
+      const latGap = Math.abs(lead.lateralOffset - trail.lateralOffset);
+      const isActivelyPassingSideBySide =
+        latGap >= 9.5 || trail.battleState === 'LATE_BRAKE' || trail.battleState === 'SWITCHBACK';
+
+      if (distGap >= 0 && distGap < minSameLaneGap && !isActivelyPassingSideBySide) {
+        // Gently hold nose-to-tail AND steer trailing car out to a parallel lane
+        trail.totalDistance = lead.totalDistance - minSameLaneGap;
+        trail.lap = Math.max(1, Math.floor(trail.totalDistance) + 1);
+        trail.lapProgress = ((trail.totalDistance % 1) + 1) % 1;
+        if (latGap < 9.5) {
+          trail.lateralOffset += (lead.lateralOffset <= 0 ? 1 : -1) * Math.min(4.5, dtSec * 14);
+        }
+      }
+    }
+
+    // Check Finish & Apply Mandatory 2-Compound Dry Rule (+30s Penalty if violated!)
     const provisionallyFinished = updatedCars.some((c) => !c.dnf && c.lap > track.totalLaps);
+    if (provisionallyFinished && !prev.finished && !wetRaceOccurred) {
+      updatedCars.forEach((c) => {
+        if (!c.dnf) {
+          const dryCount = new Set(c.compoundsUsed.filter((comp) => TIRE_SPECS[comp]?.isDry)).size;
+          if (dryCount < 2) {
+            c.compoundViolation = true;
+            c.penaltySec += 30;
+            const d = driverMap.get(c.driverId);
+            pushLog('INCIDENT', `STEWARDS: ${d.code} failed to use 2 dry compounds — +30s Penalty applied!`, track.totalLaps);
+          }
+        }
+      });
+    }
+
     const sortedCars = [...updatedCars].sort((a, b) => {
       if (a.dnf && !b.dnf) return 1;
       if (!a.dnf && b.dnf) return -1;
@@ -1905,19 +2018,19 @@
 
     return {
       nextState: {
-        ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness, trackRubber,
+        ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness, wetRaceOccurred, trackRubber,
         flagStatus, flagTimerSec, safetyCarProgress, redFlagCount, sessionBestSectors,
-        broadcastBanner, cars: sortedCars, logs, fastestLapDriverId, fastestLapTimeSec, finished,
+        broadcastBanner, activePitCard, cars: sortedCars, logs, fastestLapDriverId, fastestLapTimeSec, finished,
       },
       events,
     };
   }
 
-  // Expose full engine namespace globally for Part 2/2 (app.js)
   window.GOWS = {
     TRACK_W,
     TRACK_H,
     TIRE_SPECS,
+    getTireDegPerLap,
     POINTS_SYSTEM,
     PRIZE_MONEY_MILLIONS,
     INITIAL_TEAMS,
