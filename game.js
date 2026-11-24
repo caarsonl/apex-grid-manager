@@ -4,9 +4,9 @@ const { useState, useEffect, useMemo, useRef } = React;
 // 1. SERIES DATA & CONSTANTS
 // ==========================================
 const TIRE_SPECS = {
-  SOFT: { label: 'Soft C4', short: 'S', color: '#ef4444', textColor: '#ffffff', baseGrip: 1.045, degPerLap: 4.3, optimalWetMin: 0, optimalWetMax: 18 },
-  MEDIUM: { label: 'Medium C3', short: 'M', color: '#eab308', textColor: '#0f172a', baseGrip: 1.02, degPerLap: 2.6, optimalWetMin: 0, optimalWetMax: 20 },
-  HARD: { label: 'Hard C2', short: 'H', color: '#f8fafc', textColor: '#0f172a', baseGrip: 0.995, degPerLap: 1.55, optimalWetMin: 0, optimalWetMax: 22 },
+  SOFT: { label: 'Soft C4', short: 'S', color: '#ef4444', textColor: '#ffffff', baseGrip: 1.048, degPerLap: 4.3, optimalWetMin: 0, optimalWetMax: 18 },
+  MEDIUM: { label: 'Medium C3', short: 'M', color: '#eab308', textColor: '#0f172a', baseGrip: 1.022, degPerLap: 2.6, optimalWetMin: 0, optimalWetMax: 20 },
+  HARD: { label: 'Hard C2', short: 'H', color: '#f8fafc', textColor: '#0f172a', baseGrip: 0.996, degPerLap: 1.55, optimalWetMin: 0, optimalWetMax: 22 },
   INTER: { label: 'Intermediate', short: 'I', color: '#22c55e', textColor: '#052e16', baseGrip: 0.985, degPerLap: 2.4, optimalWetMin: 18, optimalWetMax: 65 },
   WET: { label: 'Full Wet', short: 'W', color: '#3b82f6', textColor: '#ffffff', baseGrip: 0.955, degPerLap: 2.0, optimalWetMin: 60, optimalWetMax: 100 },
 };
@@ -39,12 +39,15 @@ const INITIAL_DRIVERS = [
 ];
 
 // ==========================================
-// 2. WEB AUDIO SYNTHESIZER
+// 2. WEB AUDIO SYNTHESIZER (ENGINE + FX)
 // ==========================================
 class SoundEngine {
   constructor() {
     this.ctx = null;
     this.muted = false;
+    this.engineOsc1 = null;
+    this.engineOsc2 = null;
+    this.engineGain = null;
   }
 
   ensureContext() {
@@ -61,6 +64,62 @@ class SoundEngine {
 
   setMuted(mute) {
     this.muted = mute;
+    if (mute) this.stopEngineHum();
+  }
+
+  updateEngineHum(active, simSpeed, flagStatus, anyErsOvertake) {
+    if (this.muted || !active || simSpeed === 0 || flagStatus === 'RED_FLAG') {
+      this.stopEngineHum();
+      return;
+    }
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    if (!this.engineOsc1) {
+      this.engineOsc1 = ctx.createOscillator();
+      this.engineOsc2 = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      this.engineGain = ctx.createGain();
+
+      this.engineOsc1.type = 'sawtooth';
+      this.engineOsc2.type = 'triangle';
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(340, ctx.currentTime);
+
+      this.engineGain.gain.setValueAtTime(0.014, ctx.currentTime);
+
+      this.engineOsc1.connect(filter);
+      this.engineOsc2.connect(filter);
+      filter.connect(this.engineGain);
+      this.engineGain.connect(ctx.destination);
+
+      this.engineOsc1.start();
+      this.engineOsc2.start();
+    }
+
+    const now = ctx.currentTime;
+    const speedFactor = Math.min(1.45, 0.92 + Math.log2(Math.max(1, simSpeed)) * 0.09);
+    const neutralFactor = flagStatus === 'SC' || flagStatus === 'VSC' ? 0.68 : 1.0;
+    const ersBoost = anyErsOvertake ? 1.12 : 1.0;
+    const baseFreq = 98 * speedFactor * neutralFactor * ersBoost;
+
+    this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.08);
+    this.engineOsc2.frequency.setTargetAtTime(baseFreq * 1.98, now, 0.08);
+    this.engineGain.gain.setTargetAtTime(0.015, now, 0.08);
+  }
+
+  stopEngineHum() {
+    if (this.engineOsc1) {
+      try {
+        this.engineOsc1.stop();
+        this.engineOsc2.stop();
+        this.engineOsc1.disconnect();
+        this.engineOsc2.disconnect();
+      } catch {}
+      this.engineOsc1 = null;
+      this.engineOsc2 = null;
+      this.engineGain = null;
+    }
   }
 
   playTelemetryTick() {
@@ -96,6 +155,63 @@ class SoundEngine {
       gain.connect(ctx.destination);
       osc.start(start);
       osc.stop(start + 0.07);
+    });
+  }
+
+  playPitAirGun() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Synthesized pneumatic wheel-gun whirr bursts
+    [0, 0.16].forEach((offset) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(420, now + offset);
+      osc.frequency.exponentialRampToValueAtTime(1180, now + offset + 0.11);
+      gain.gain.setValueAtTime(0.045, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.125);
+    });
+  }
+
+  playOvertakeWhoosh() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(780, now + 0.14);
+    gain.gain.setValueAtTime(0.045, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.17);
+  }
+
+  playFlagAlert(isRedFlag = false) {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const freqs = isRedFlag ? [880, 440, 880, 440] : [659.25, 523.25, 659.25];
+    freqs.forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + idx * 0.11;
+      osc.type = isRedFlag ? 'square' : 'triangle';
+      osc.frequency.setValueAtTime(f, start);
+      gain.gain.setValueAtTime(isRedFlag ? 0.045 : 0.055, start);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.095);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.1);
     });
   }
 
@@ -141,7 +257,7 @@ class SoundEngine {
 const soundEngine = new SoundEngine();
 
 // ==========================================
-// 3. PROCEDURAL TRACK GENERATOR
+// 3. PROCEDURAL TRACK GENERATOR (WITH DRS ZONES)
 // ==========================================
 const CIRCUIT_PREFIXES = ['Aethelgard', 'Valenport', 'Cinderfall', 'Solstice', 'Kuroshio', 'Vespera', 'Nordhaven', 'Altiplano', 'Meridian', 'Halcyon', 'Stratos', 'Oakhaven'];
 const CIRCUIT_SUFFIXES = ['Autodrome', 'International Circuit', 'Ring', 'Speedway Park', 'Motorsport Arena', 'Coastal Circuit'];
@@ -288,6 +404,12 @@ function generateProceduralTrack(seed) {
     pitWaypoints.push({ x: rotatedWaypoints[idx].x + nx * pitOffsetPx, y: rotatedWaypoints[idx].y + ny * pitOffsetPx });
   }
 
+  // Two DRS straight zones: Main Start/Finish Straight & Back Straight
+  const drsZones = [
+    { start: 0.91, end: 0.08 },
+    { start: 0.44, end: 0.59 },
+  ];
+
   const lengthKm = Number((4.1 + rng() * 2.3).toFixed(2));
   const totalLaps = Math.max(18, Math.min(34, Math.round(135 / lengthKm)));
   const avgCurvature = totalCurvature / uniformCount;
@@ -302,11 +424,16 @@ function generateProceduralTrack(seed) {
   return {
     seed, name, country, lengthKm, totalLaps, baseLapTimeSec,
     aeroDemand, powerDemand, chassisDemand, tireAbrasion, overtakeDifficulty, pitLossSec,
-    waypoints: rotatedWaypoints, pitWaypoints, sectorSplits: [0.33, 0.67], startNormal,
+    waypoints: rotatedWaypoints, pitWaypoints, drsZones, sectorSplits: [0.33, 0.67], startNormal,
   };
 }
 
-function sampleTrackPosition(track, progress, inPit, pitTimerSec) {
+function isProgressInDrsZone(track, progress) {
+  const p = ((progress % 1) + 1) % 1;
+  return track.drsZones.some((z) => (z.start <= z.end ? p >= z.start && p <= z.end : p >= z.start || p <= z.end));
+}
+
+function sampleTrackPose(track, progress, inPit, pitTimerSec, lateralOffsetPx = 0) {
   const wrapped = ((progress % 1) + 1) % 1;
   if (inPit && track.pitWaypoints.length > 0) {
     const pitRatio = Math.min(1, Math.max(0, 1 - pitTimerSec / 22));
@@ -316,8 +443,10 @@ function sampleTrackPosition(track, progress, inPit, pitTimerSec) {
     const alpha = idxFloat - i0;
     const a = track.pitWaypoints[i0];
     const b = track.pitWaypoints[i1];
-    return { x: a.x + (b.x - a.x) * alpha, y: a.y + (b.y - a.y) * alpha };
+    const angle = Math.atan2(b.y - a.y, b.x - a.x);
+    return { x: a.x + (b.x - a.x) * alpha, y: a.y + (b.y - a.y) * alpha, angle };
   }
+
   const n = track.waypoints.length;
   const idxFloat = wrapped * n;
   const i0 = Math.floor(idxFloat) % n;
@@ -325,11 +454,21 @@ function sampleTrackPosition(track, progress, inPit, pitTimerSec) {
   const alpha = idxFloat - Math.floor(idxFloat);
   const a = track.waypoints[i0];
   const b = track.waypoints[i1];
-  return { x: a.x + (b.x - a.x) * alpha, y: a.y + (b.y - a.y) * alpha };
+  const tx = b.x - a.x;
+  const ty = b.y - a.y;
+  const angle = Math.atan2(ty, tx);
+  const nx = -Math.sin(angle);
+  const ny = Math.cos(angle);
+
+  return {
+    x: a.x + tx * alpha + nx * lateralOffsetPx,
+    y: a.y + ty * alpha + ny * lateralOffsetPx,
+    angle,
+  };
 }
 
 // ==========================================
-// 4. SIMULATION ENGINE
+// 4. SIMULATION ENGINE (ERS, DRS, DIRTY AIR, SC/VSC/RED FLAG)
 // ==========================================
 const WEATHER_TRANSITIONS = {
   DRY: ['DRY', 'DRY', 'OVERCAST'],
@@ -382,7 +521,11 @@ function createInitialRaceState(roundNumber, track, teams, drivers, playerSetups
       driverId: drv.id, teamId: drv.teamId, position: idx + 1, lap: 1,
       lapProgress: gridOffsetProgress, totalDistance: gridOffsetProgress,
       tire: startingTire, tireWear: 0, fuelKg: startingFuelKg,
-      paceMode: 'STANDARD', inPit: false, pitTimerSec: 0, pitRequested: false,
+      paceMode: 'STANDARD', ersMode: 'BALANCED', ersBattery: 100,
+      drsActive: false, inDirtyAir: false,
+      lateralOffset: idx % 2 === 0 ? -3.5 : 3.5,
+      overtakeFlashSec: 0,
+      inPit: false, pitTimerSec: 0, pitRequested: false,
       nextTire: startingTire, lastLapTimeSec: null, bestLapTimeSec: null,
       currentLapElapsedSec: 0, gapToLeaderSec: idx * 0.35, intervalSec: idx === 0 ? 0 : 0.35,
       pitStopsCount: 0, dnf: false,
@@ -392,15 +535,19 @@ function createInitialRaceState(roundNumber, track, teams, drivers, playerSetups
   return {
     roundNumber, track, elapsedSec: 0, weather: initialWeather, forecast,
     nextWeatherChangeSec: track.baseLapTimeSec * 4.5, trackWetness: initialWetness,
+    flagStatus: 'GREEN', // GREEN | VSC | SC | RED_FLAG
+    flagTimerSec: 0,
+    safetyCarProgress: 0.04,
+    redFlagCount: 0,
     cars,
-    logs: [{ id: 'log-start', lap: 1, timeSec: 0, category: 'RACE', message: `Lights out at ${track.name}! ${track.totalLaps} laps scheduled under ${initialWeather.replace('_', ' ')} skies.` }],
+    logs: [{ id: 'log-start', lap: 1, timeSec: 0, category: 'RACE', message: `LIGHTS OUT at ${track.name}! ${track.totalLaps} laps under ${initialWeather.replace('_', ' ')} skies.` }],
     fastestLapDriverId: null, fastestLapTimeSec: null, finished: false,
   };
 }
 
 function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
   if (prev.finished) {
-    return { nextState: prev, events: { playerLapCompleted: false, weatherChanged: false, radioAlert: false } };
+    return { nextState: prev, events: { playerLapCompleted: false, weatherChanged: false, radioAlert: false, overtakeEvent: false, flagChanged: false, isRedFlag: false, pitStopSound: false } };
   }
 
   const track = prev.track;
@@ -409,19 +556,62 @@ function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
   let forecast = [...prev.forecast];
   let nextWeatherChangeSec = prev.nextWeatherChangeSec;
   let trackWetness = prev.trackWetness;
+  let flagStatus = prev.flagStatus;
+  let flagTimerSec = prev.flagTimerSec;
+  let safetyCarProgress = prev.safetyCarProgress;
+  let redFlagCount = prev.redFlagCount;
   const logs = [...prev.logs];
   let fastestLapDriverId = prev.fastestLapDriverId;
   let fastestLapTimeSec = prev.fastestLapTimeSec;
 
-  const events = { playerLapCompleted: false, weatherChanged: false, radioAlert: false };
+  const events = {
+    playerLapCompleted: false,
+    weatherChanged: false,
+    radioAlert: false,
+    overtakeEvent: false,
+    flagChanged: false,
+    isRedFlag: false,
+    pitStopSound: false,
+  };
+
   const leaderCar = prev.cars.find((c) => !c.dnf) || prev.cars[0];
   const currentLeaderLap = leaderCar ? leaderCar.lap : 1;
 
   const pushLog = (category, message, lap = currentLeaderLap) => {
     logs.unshift({ id: `log-${elapsedSec.toFixed(2)}-${Math.random().toString(36).slice(2, 6)}`, lap, timeSec: elapsedSec, category, message });
-    if (logs.length > 70) logs.pop();
+    if (logs.length > 85) logs.pop();
   };
 
+  // Handle active Red Flag suspension
+  if (flagStatus === 'RED_FLAG') {
+    flagTimerSec -= dtSec;
+    if (flagTimerSec <= 0) {
+      flagStatus = 'GREEN';
+      events.flagChanged = true;
+      pushLog('FLAG', 'RED FLAG LIFTED — Standing restart! All cars line up on the grid with fresh rubber.', currentLeaderLap);
+    } else {
+      return {
+        nextState: { ...prev, elapsedSec, flagStatus, flagTimerSec, logs },
+        events,
+      };
+    }
+  }
+
+  // Handle VSC / SC countdown
+  if (flagStatus === 'VSC' || flagStatus === 'SC') {
+    flagTimerSec -= dtSec;
+    if (flagStatus === 'SC') {
+      safetyCarProgress = (safetyCarProgress + dtSec / (track.baseLapTimeSec * 1.38)) % 1;
+    }
+    if (flagTimerSec <= 0) {
+      const endedFlag = flagStatus;
+      flagStatus = 'GREEN';
+      events.flagChanged = true;
+      pushLog('FLAG', `${endedFlag === 'SC' ? 'SAFETY CAR IN THIS LAP' : 'VSC ENDING'} — Green flag racing resumes!`, currentLeaderLap);
+    }
+  }
+
+  // Dynamic weather evolution
   if (elapsedSec >= nextWeatherChangeSec) {
     const nextW = forecast.shift() || 'DRY';
     const tail = forecast[forecast.length - 1] || nextW;
@@ -440,31 +630,109 @@ function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
   if (trackWetness < targetWet) trackWetness = Math.min(targetWet, trackWetness + wetRate * dtSec);
   else if (trackWetness > targetWet) trackWetness = Math.max(targetWet, trackWetness - wetRate * dtSec);
 
+  // Torrential rain Red Flag check (max once per race)
+  if (flagStatus === 'GREEN' && trackWetness > 88 && redFlagCount === 0 && currentLeaderLap > 3 && currentLeaderLap < track.totalLaps - 3 && Math.random() < 0.0018 * dtSec) {
+    flagStatus = 'RED_FLAG';
+    flagTimerSec = 14;
+    redFlagCount += 1;
+    events.flagChanged = true;
+    events.isRedFlag = true;
+    pushLog('FLAG', 'RED FLAG! Standing water exceeds safe visibility. Cars return to pit lane for free tire change.');
+
+    // Line up active cars in grid order on fresh WET tires
+    const gridResetCars = prev.cars.map((c, idx) => {
+      if (c.dnf) return c;
+      const baseLap = Math.max(1, currentLeaderLap);
+      const gridProg = -0.004 * (idx + 1);
+      return {
+        ...c,
+        lap: baseLap,
+        lapProgress: gridProg,
+        totalDistance: baseLap - 1 + gridProg,
+        tire: 'WET',
+        tireWear: 0,
+        inPit: false,
+        pitRequested: false,
+        lateralOffset: idx % 2 === 0 ? -3.5 : 3.5,
+      };
+    });
+
+    return {
+      nextState: { ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness, flagStatus, flagTimerSec, redFlagCount, cars: gridResetCars, logs },
+      events,
+    };
+  }
+
   const teamMap = new Map(teams.map((t) => [t.id, t]));
   const driverMap = new Map(drivers.map((d) => [d.id, d]));
-  const prevOrder = prev.cars.map((c) => c.driverId);
+
+  // Snapshot rank before physics tick so every overtake is detected accurately even at 32x
+  const preRankMap = new Map();
+  prev.cars.forEach((c, idx) => preRankMap.set(c.driverId, idx + 1));
+
+  // Map current position -> car ahead for Dirty Air & DRS calculation
+  const activeSortedPrev = prev.cars.filter((c) => !c.dnf);
+  const aheadByDriverId = new Map();
+  for (let i = 1; i < activeSortedPrev.length; i++) {
+    aheadByDriverId.set(activeSortedPrev[i].driverId, activeSortedPrev[i - 1]);
+  }
+
+  const drsPermitted = flagStatus === 'GREEN' && trackWetness < 22 && currentLeaderLap >= 2;
+  let incidentTriggeredThisTick = false;
 
   const updatedCars = prev.cars.map((car) => {
-    if (car.dnf) return { ...car };
+    if (car.dnf) return { ...car, drsActive: false, inDirtyAir: false };
     const team = teamMap.get(car.teamId);
     const driver = driverMap.get(car.driverId);
     const isPlayer = team.id === playerTeamId;
 
+    // Active pit stop servicing
     if (car.inPit) {
       const nextTimer = car.pitTimerSec - dtSec;
       if (nextTimer <= 0) {
         const refuelTarget = Math.min(110, Math.max(car.fuelKg, (track.totalLaps - car.lap + 1) * 2.15 + 3));
         if (isPlayer) {
           events.radioAlert = true;
-          pushLog('PIT', `${driver.code} exits pit lane on fresh ${car.nextTire} tires.`, car.lap);
+          events.pitStopSound = true;
+          pushLog('PIT', `${driver.code} released from box on fresh ${car.nextTire} tires.`, car.lap);
         }
         return {
           ...car, inPit: false, pitTimerSec: 0, pitRequested: false, tire: car.nextTire,
           tireWear: 0, fuelKg: refuelTarget, pitStopsCount: car.pitStopsCount + 1,
-          lapProgress: 0.015, totalDistance: car.lap - 1 + 0.015,
+          lapProgress: 0.015, totalDistance: car.lap - 1 + 0.015, drsActive: false, inDirtyAir: false,
         };
       }
-      return { ...car, pitTimerSec: nextTimer, currentLapElapsedSec: car.currentLapElapsedSec + dtSec };
+      return { ...car, pitTimerSec: nextTimer, currentLapElapsedSec: car.currentLapElapsedSec + dtSec, drsActive: false, inDirtyAir: false };
+    }
+
+    // Gap to car directly ahead
+    const aheadCar = aheadByDriverId.get(car.driverId);
+    const gapAheadSec = aheadCar && !aheadCar.inPit
+      ? Math.max(0, (aheadCar.totalDistance - car.totalDistance) * track.baseLapTimeSec)
+      : 99;
+
+    // Dirty air & DRS logic
+    const inDirtyAir = flagStatus === 'GREEN' && gapAheadSec > 0.05 && gapAheadSec < 1.25;
+    const drsActive = drsPermitted && gapAheadSec <= 1.0 && isProgressInDrsZone(track, car.lapProgress);
+
+    // ERS battery charge / discharge
+    let ersMode = car.ersMode;
+    let ersBattery = car.ersBattery;
+    if (!isPlayer) {
+      if (flagStatus !== 'GREEN') ersMode = 'HARVEST';
+      else if (gapAheadSec < 1.1 && ersBattery > 28) ersMode = 'OVERTAKE';
+      else if (ersBattery < 25) ersMode = 'HARVEST';
+      else ersMode = 'BALANCED';
+    }
+
+    const lapFractionEst = dtSec / track.baseLapTimeSec;
+    if (ersMode === 'OVERTAKE') {
+      ersBattery = Math.max(0, ersBattery - lapFractionEst * 38);
+      if (ersBattery <= 1 && isPlayer) ersMode = 'BALANCED';
+    } else if (ersMode === 'HARVEST') {
+      ersBattery = Math.min(100, ersBattery + lapFractionEst * 26);
+    } else {
+      ersBattery = Math.min(100, Math.max(0, ersBattery + lapFractionEst * 4));
     }
 
     const tireSpec = TIRE_SPECS[car.tire];
@@ -485,13 +753,31 @@ function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
 
     const fuelDeltaSec = car.fuelKg * 0.032;
     const paceDeltaSec = car.paceMode === 'ATTACK' ? -0.55 : car.paceMode === 'CONSERVE' ? 0.6 : 0;
+    const ersDeltaSec = ersMode === 'OVERTAKE' && ersBattery > 2 ? -0.62 : ersMode === 'HARVEST' ? 0.45 : 0;
+    const drsDeltaSec = drsActive ? -0.78 : 0;
+    const dirtyAirDeltaSec = inDirtyAir ? (0.38 * track.overtakeDifficulty * (1 - team.car.aero / 160)) : 0;
     const outOfFuelPenalty = car.fuelKg <= 0.1 ? 9.5 : 0;
-    const jitter = ((100 - driver.consistency) / 100) * (Math.random() - 0.5) * 0.35;
+    const jitter = ((100 - driver.consistency) / 100) * (Math.random() - 0.5) * 0.32;
 
-    const effectiveLapTime = Math.max(
-      track.baseLapTimeSec * 0.82,
-      track.baseLapTimeSec + carDeltaSec + driverDeltaSec + compoundDeltaSec + weatherMismatchSec + fuelDeltaSec + paceDeltaSec + outOfFuelPenalty + jitter
+    let effectiveLapTime = Math.max(
+      track.baseLapTimeSec * 0.80,
+      track.baseLapTimeSec + carDeltaSec + driverDeltaSec + compoundDeltaSec + weatherMismatchSec + fuelDeltaSec + paceDeltaSec + ersDeltaSec + drsDeltaSec + dirtyAirDeltaSec + outOfFuelPenalty + jitter
     );
+
+    // VSC / Safety Car pace neutralization & pack bunching
+    if (flagStatus === 'VSC') {
+      effectiveLapTime = track.baseLapTimeSec * 1.32;
+    } else if (flagStatus === 'SC') {
+      const targetScLapTime = track.baseLapTimeSec * 1.38;
+      // Leader matches SC; trailing cars catch up to pack queue
+      if (car.position === 1) {
+        effectiveLapTime = targetScLapTime;
+      } else if (gapAheadSec > 0.65) {
+        effectiveLapTime = track.baseLapTimeSec * 1.15;
+      } else {
+        effectiveLapTime = targetScLapTime * 1.01;
+      }
+    }
 
     const progressDelta = dtSec / effectiveLapTime;
     const prevProgress = car.lapProgress;
@@ -508,80 +794,130 @@ function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
     let dnf = false;
     let dnfReason;
 
+    // Tire wear & fuel burn (heavily reduced behind SC/VSC)
+    const neutralMult = flagStatus === 'GREEN' ? 1.0 : 0.35;
     const paceWearMult = paceMode === 'ATTACK' ? 1.28 : paceMode === 'CONSERVE' ? 0.78 : 1.0;
     const mgmtFactor = 1.25 - (driver.tireManagement / 100) * 0.45;
     const dryOverheatMult = (car.tire === 'INTER' || car.tire === 'WET') && trackWetness < 15 ? 2.1 : 1.0;
 
-    const tireWear = Math.min(100, car.tireWear + progressDelta * tireSpec.degPerLap * track.tireAbrasion * paceWearMult * mgmtFactor * dryOverheatMult);
-    const fuelBurnMult = paceMode === 'ATTACK' ? 1.14 : paceMode === 'CONSERVE' ? 0.86 : 1.0;
+    const tireWear = Math.min(100, car.tireWear + progressDelta * tireSpec.degPerLap * track.tireAbrasion * paceWearMult * mgmtFactor * dryOverheatMult * neutralMult);
+    const fuelBurnMult = (paceMode === 'ATTACK' ? 1.14 : paceMode === 'CONSERVE' ? 0.86 : 1.0) * neutralMult;
     const fuelKg = Math.max(0, car.fuelKg - progressDelta * 2.05 * fuelBurnMult);
 
+    // AI pit strategy (opportunistic cheap pit stops under SC/VSC!)
     if (!isPlayer) {
       const remainingLaps = track.totalLaps - newLap;
       const wrongTireForRain =
         (trackWetness >= 26 && (car.tire === 'SOFT' || car.tire === 'MEDIUM' || car.tire === 'HARD')) ||
         (trackWetness >= 68 && car.tire === 'INTER') ||
         (trackWetness <= 14 && (car.tire === 'INTER' || car.tire === 'WET'));
+      const scCheapStop = (flagStatus === 'SC' || flagStatus === 'VSC') && tireWear >= 44 && remainingLaps >= 4;
 
-      if (!pitRequested && remainingLaps >= 2 && (tireWear >= 74 || wrongTireForRain)) {
+      if (!pitRequested && remainingLaps >= 2 && (tireWear >= 74 || wrongTireForRain || scCheapStop)) {
         pitRequested = true;
         nextTire = chooseOptimalTireForWetness(trackWetness, remainingLaps);
       }
-      if (tireWear > 65) paceMode = 'CONSERVE';
+      if (flagStatus !== 'GREEN' || tireWear > 65) paceMode = 'CONSERVE';
       else if (remainingLaps <= 5 && tireWear < 55 && fuelKg > remainingLaps * 2.2) paceMode = 'ATTACK';
       else paceMode = 'STANDARD';
     }
 
+    // Pit entry check (handle multi-lap step at 16x/32x safely)
     if (pitRequested && prevProgress < 0.96 && newProgress >= 0.96 && newLap < track.totalLaps) {
       inPit = true;
-      pitTimerSec = track.pitLossSec + (Math.random() - 0.5) * 1.2;
+      pitTimerSec = track.pitLossSec + (Math.random() - 0.5) * 1.1;
       if (isPlayer) {
         events.radioAlert = true;
+        events.pitStopSound = true;
         pushLog('PIT', `${driver.code} boxing for ${nextTire} tires.`, newLap);
       }
     }
 
+    // Lap completion check
     if (prevProgress < 1.0 && newProgress >= 1.0) {
-      newProgress -= 1.0;
+      const completedLaps = Math.floor(newProgress);
+      newProgress -= completedLaps;
       if (prevProgress >= 0) {
-        lastLapTimeSec = Number(currentLapElapsedSec.toFixed(3));
+        lastLapTimeSec = Number((currentLapElapsedSec / completedLaps).toFixed(3));
         if (bestLapTimeSec === null || lastLapTimeSec < bestLapTimeSec) bestLapTimeSec = lastLapTimeSec;
-        if (fastestLapTimeSec === null || lastLapTimeSec < fastestLapTimeSec) {
+        if (flagStatus === 'GREEN' && (fastestLapTimeSec === null || lastLapTimeSec < fastestLapTimeSec)) {
           fastestLapTimeSec = lastLapTimeSec;
           fastestLapDriverId = driver.id;
         }
         if (isPlayer) events.playerLapCompleted = true;
 
+        // Reliability & crash incident check
         const attackStress = paceMode === 'ATTACK' ? 1.8 : 1.0;
-        const failureProb = ((102 - team.car.reliability) / 100) * 0.0022 * attackStress;
+        const failureProb = ((102 - team.car.reliability) / 100) * 0.0024 * attackStress * completedLaps;
         if (newLap > 2 && newLap < track.totalLaps && Math.random() < failureProb) {
           dnf = true;
-          dnfReason = 'Power Unit Failure';
+          const isCrash = Math.random() < 0.45;
+          dnfReason = isCrash ? 'Barrier Collision' : 'Power Unit Failure';
           events.radioAlert = isPlayer;
-          pushLog('INCIDENT', `${driver.code} (${team.shortName}) retires: ${dnfReason}!`, newLap);
+          pushLog('INCIDENT', `${driver.code} (${team.shortName}) OUT: ${dnfReason}!`, newLap);
+
+          if (flagStatus === 'GREEN' && !incidentTriggeredThisTick) {
+            incidentTriggeredThisTick = true;
+            if (isCrash && redFlagCount === 0 && Math.random() < 0.35) {
+              flagStatus = 'RED_FLAG';
+              flagTimerSec = 14;
+              redFlagCount += 1;
+              events.flagChanged = true;
+              events.isRedFlag = true;
+              pushLog('FLAG', `RED FLAG! Debris and barrier damage from ${driver.code}'s incident.`, newLap);
+            } else if (isCrash) {
+              flagStatus = 'SC';
+              flagTimerSec = track.baseLapTimeSec * 2.2;
+              safetyCarProgress = (newProgress + 0.06) % 1;
+              events.flagChanged = true;
+              pushLog('FLAG', `SAFETY CAR DEPLOYED — Marshals recovering ${driver.code}'s stranded chassis.`, newLap);
+            } else {
+              flagStatus = 'VSC';
+              flagTimerSec = track.baseLapTimeSec * 1.4;
+              events.flagChanged = true;
+              pushLog('FLAG', `VIRTUAL SAFETY CAR — Double yellows in sector for ${driver.code}.`, newLap);
+            }
+          }
         }
       }
-      newLap += 1;
+      newLap += completedLaps;
       currentLapElapsedSec = 0;
     }
 
+    // Smooth lateral offset: pull out of slipstream when close to car ahead or actively overtaking
+    const targetLateral =
+      car.overtakeFlashSec > 0
+        ? (car.position % 2 === 0 ? 6.5 : -6.5)
+        : gapAheadSec < 1.1 && !inPit
+          ? (car.position % 2 === 0 ? 4.8 : -4.8)
+          : 0;
+    const lateralOffset = car.lateralOffset + (targetLateral - car.lateralOffset) * Math.min(1, dtSec * 4.5);
+    const overtakeFlashSec = Math.max(0, car.overtakeFlashSec - dtSec);
+
     return {
       ...car, lap: newLap, lapProgress: newProgress, totalDistance: newLap - 1 + newProgress,
-      tireWear, fuelKg, paceMode, inPit, pitTimerSec, pitRequested, nextTire,
+      tireWear, fuelKg, paceMode, ersMode, ersBattery, drsActive, inDirtyAir,
+      lateralOffset, overtakeFlashSec,
+      inPit, pitTimerSec, pitRequested, nextTire,
       lastLapTimeSec, bestLapTimeSec, currentLapElapsedSec, dnf, dnfReason,
     };
   });
 
+  // Sort cars by race order
   const sortedCars = [...updatedCars].sort((a, b) => {
     if (a.dnf && !b.dnf) return 1;
     if (!a.dnf && b.dnf) return -1;
     return b.totalDistance - a.totalDistance;
   });
 
+  // Compute gaps and log genuine on-track overtakes accurately
   const leaderDist = sortedCars[0]?.totalDistance ?? 0;
   for (let i = 0; i < sortedCars.length; i++) {
     const car = sortedCars[i];
-    car.position = i + 1;
+    const newPos = i + 1;
+    const oldPos = preRankMap.get(car.driverId) || newPos;
+    car.position = newPos;
+
     if (i === 0 || car.dnf) {
       car.gapToLeaderSec = 0;
       car.intervalSec = 0;
@@ -590,12 +926,20 @@ function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
       car.gapToLeaderSec = Number((Math.max(0, leaderDist - car.totalDistance) * track.baseLapTimeSec).toFixed(2));
       car.intervalSec = Number((Math.max(0, ahead.totalDistance - car.totalDistance) * track.baseLapTimeSec).toFixed(2));
 
-      const prevIdx = prevOrder.indexOf(car.driverId);
-      const aheadPrevIdx = prevOrder.indexOf(ahead.driverId);
-      if (prevIdx > aheadPrevIdx && car.position <= 6 && !car.inPit && !ahead.inPit && car.lap > 1 && Math.random() < 0.35) {
-        const d1 = driverMap.get(car.driverId);
-        const d2 = driverMap.get(ahead.driverId);
-        pushLog('OVERTAKE', `${d1.code} overtakes ${d2.code} for P${car.position}!`, car.lap);
+      // Detect genuine position gain (where car passed is not in pit lane)
+      if (!car.dnf && !car.inPit && newPos < oldPos && car.lap >= 1) {
+        const passedCar = sortedCars[i + 1];
+        if (passedCar && !passedCar.inPit && !passedCar.dnf) {
+          car.overtakeFlashSec = 2.6;
+          const d1 = driverMap.get(car.driverId);
+          const d2 = driverMap.get(passedCar.driverId);
+          const isPlayerInvolved = car.teamId === playerTeamId || passedCar.teamId === playerTeamId;
+          if (isPlayerInvolved || newPos <= 8) {
+            const aid = car.drsActive ? ' [DRS]' : car.ersMode === 'OVERTAKE' ? ' [ERS]' : '';
+            pushLog('OVERTAKE', `${d1.code} overtakes ${d2.code} for P${newPos}${aid}!`, car.lap);
+            if (isPlayerInvolved) events.overtakeEvent = true;
+          }
+        }
       }
     }
   }
@@ -609,14 +953,86 @@ function stepRaceSimulation(prev, dtSec, teams, drivers, playerTeamId) {
   }
 
   return {
-    nextState: { ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness, cars: sortedCars, logs, fastestLapDriverId, fastestLapTimeSec, finished },
+    nextState: {
+      ...prev, elapsedSec, weather, forecast, nextWeatherChangeSec, trackWetness,
+      flagStatus, flagTimerSec, safetyCarProgress, redFlagCount,
+      cars: sortedCars, logs, fastestLapDriverId, fastestLapTimeSec, finished,
+    },
     events,
   };
 }
 
 // ==========================================
-// 5. UI COMPONENTS
+// 5. OPEN-WHEEL CANVAS RENDERER (CAR SILHOUETTES, DRS ZONES, SC, OVERTAKE RINGS)
 // ==========================================
+function drawOpenWheelCar(ctx, x, y, angle, primaryColor, tireColor, isPlayer, drsActive, ersOvertake, overtaking) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  // Player selection halo or active overtake pulse
+  if (overtaking) {
+    ctx.beginPath();
+    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(16, 185, 129, 0.85)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  } else if (isPlayer) {
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  }
+
+  // ERS exhaust boost flame
+  if (ersOvertake) {
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.moveTo(-11, -2);
+    ctx.lineTo(-17, 0);
+    ctx.lineTo(-11, 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // 4 Exposed Open Wheels (colored by tire compound)
+  ctx.fillStyle = tireColor;
+  ctx.fillRect(4.5, -7.2, 4.2, 2.5);  // Front-Left
+  ctx.fillRect(4.5, 4.7, 4.2, 2.5);   // Front-Right
+  ctx.fillRect(-8.5, -7.6, 4.6, 2.8); // Rear-Left
+  ctx.fillRect(-8.5, 4.8, 4.6, 2.8);  // Rear-Right
+
+  // Front Wing
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillRect(9.2, -6.5, 2.4, 13);
+
+  // Sculpted Monocoque & Sidepods
+  ctx.fillStyle = primaryColor;
+  ctx.beginPath();
+  ctx.moveTo(10.5, -1.6);
+  ctx.lineTo(2, -4.4);
+  ctx.lineTo(-8.5, -3.5);
+  ctx.lineTo(-9.5, 0);
+  ctx.lineTo(-8.5, 3.5);
+  ctx.lineTo(2, 4.4);
+  ctx.lineTo(10.5, 1.6);
+  ctx.closePath();
+  ctx.fill();
+
+  // Cockpit Halo & Helmet
+  ctx.fillStyle = '#020617';
+  ctx.beginPath();
+  ctx.arc(0.5, 0, 2.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Rear Wing (glows bright emerald when DRS flap is open)
+  ctx.fillStyle = drsActive ? '#22c55e' : '#cbd5e1';
+  ctx.fillRect(-11.2, -5.8, 2.4, 11.6);
+
+  ctx.restore();
+}
+
 function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
   const canvasRef = useRef(null);
   const rainRef = useRef([]);
@@ -637,7 +1053,7 @@ function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
 
     const W = 1000;
     const H = 620;
-    const { track, cars, weather, trackWetness } = raceState;
+    const { track, cars, weather, trackWetness, flagStatus, safetyCarProgress } = raceState;
 
     ctx.clearRect(0, 0, W, H);
     const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.5, 60, W * 0.5, H * 0.5, 620);
@@ -671,21 +1087,29 @@ function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
 
     traceMainLoop();
     ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 34;
+    ctx.lineWidth = 36;
     ctx.stroke();
 
+    // Apex kerbs (yellow/black under SC/VSC, red/white under Green)
     for (let i = 0; i < pts.length; i++) {
       if (pts[i].curvature > 0.14) {
         const next = pts[(i + 1) % pts.length];
         ctx.beginPath();
         ctx.moveTo(pts[i].x, pts[i].y);
         ctx.lineTo(next.x, next.y);
-        ctx.strokeStyle = i % 2 === 0 ? '#dc2626' : '#f8fafc';
-        ctx.lineWidth = 27;
+        if (flagStatus === 'SC' || flagStatus === 'VSC') {
+          ctx.strokeStyle = i % 2 === 0 ? '#eab308' : '#0f172a';
+        } else if (flagStatus === 'RED_FLAG') {
+          ctx.strokeStyle = i % 2 === 0 ? '#ef4444' : '#0f172a';
+        } else {
+          ctx.strokeStyle = i % 2 === 0 ? '#dc2626' : '#f8fafc';
+        }
+        ctx.lineWidth = 29;
         ctx.stroke();
       }
     }
 
+    // Pit Lane
     if (track.pitWaypoints.length > 1) {
       ctx.beginPath();
       ctx.moveTo(track.pitWaypoints[0].x, track.pitWaypoints[0].y);
@@ -700,38 +1124,48 @@ function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
       ctx.setLineDash([]);
     }
 
+    // Asphalt Ribbon
     traceMainLoop();
     const wetRatio = Math.min(1, trackWetness / 100);
     ctx.strokeStyle = wetRatio > 0.25 ? '#263547' : '#334155';
-    ctx.lineWidth = 22;
+    ctx.lineWidth = 24;
     ctx.stroke();
 
     if (wetRatio > 0.15) {
       traceMainLoop();
       ctx.strokeStyle = `rgba(56, 189, 248, ${0.12 + wetRatio * 0.28})`;
-      ctx.lineWidth = 14;
+      ctx.lineWidth = 15;
       ctx.stroke();
     }
 
-    traceMainLoop();
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    // DRS Activation Zones highlighted along track
+    if (flagStatus === 'GREEN' && trackWetness < 22) {
+      for (let i = 0; i < pts.length; i++) {
+        if (isProgressInDrsZone(track, pts[i].progress)) {
+          const next = pts[(i + 1) % pts.length];
+          ctx.beginPath();
+          ctx.moveTo(pts[i].x, pts[i].y);
+          ctx.lineTo(next.x, next.y);
+          ctx.strokeStyle = 'rgba(34, 197, 94, 0.38)';
+          ctx.lineWidth = 4;
+          ctx.stroke();
+        }
+      }
+    }
 
+    // Sector Splits
     track.sectorSplits.forEach((splitProg, idx) => {
-      const sPos = sampleTrackPosition(track, splitProg, false, 0);
+      const sPos = sampleTrackPose(track, splitProg, false, 0, 0);
       ctx.beginPath();
-      ctx.arc(sPos.x, sPos.y, 6, 0, Math.PI * 2);
+      ctx.arc(sPos.x, sPos.y, 5, 0, Math.PI * 2);
       ctx.fillStyle = idx === 0 ? '#06b6d4' : '#a855f7';
       ctx.fill();
-      ctx.strokeStyle = '#020617';
-      ctx.lineWidth = 2;
-      ctx.stroke();
       ctx.font = 'bold 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
       ctx.fillStyle = '#cbd5e1';
       ctx.fillText(`S${idx + 2}`, sPos.x + 9, sPos.y - 7);
     });
 
+    // Start / Finish Line
     const sf = pts[0];
     const { nx, ny } = track.startNormal;
     ctx.save();
@@ -746,6 +1180,18 @@ function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
     ctx.restore();
     ctx.restore();
 
+    // Render Safety Car if deployed
+    if (flagStatus === 'SC') {
+      const scPose = sampleTrackPose(track, safetyCarProgress, false, 0, 0);
+      drawOpenWheelCar(ctx, scPose.x, scPose.y, scPose.angle, '#f8fafc', '#eab308', false, false, false, false);
+      ctx.fillStyle = '#eab308';
+      ctx.fillRect(scPose.x + 11, scPose.y - 14, 22, 11);
+      ctx.font = 'bold 9px ui-monospace, monospace';
+      ctx.fillStyle = '#020617';
+      ctx.fillText('SC', scPose.x + 15, scPose.y - 6);
+    }
+
+    // Render All Active Open-Wheel Cars
     const teamMap = new Map(teams.map((t) => [t.id, t]));
     const driverMap = new Map(drivers.map((d) => [d.id, d]));
 
@@ -762,38 +1208,40 @@ function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
       const team = teamMap.get(car.teamId);
       const driver = driverMap.get(car.driverId);
       if (!team || !driver) return;
-      const pos = sampleTrackPosition(track, car.lapProgress, car.inPit, car.pitTimerSec);
+      const pose = sampleTrackPose(track, car.lapProgress, car.inPit, car.pitTimerSec, car.lateralOffset);
       const isPlayer = team.id === playerTeamId;
       const tireColor = TIRE_SPECS[car.tire].color;
 
-      if (isPlayer) {
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, 13, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+      drawOpenWheelCar(
+        ctx,
+        pose.x,
+        pose.y,
+        pose.angle,
+        team.primaryColor,
+        tireColor,
+        isPlayer,
+        car.drsActive,
+        car.ersMode === 'OVERTAKE' && car.ersBattery > 2,
+        car.overtakeFlashSec > 0
+      );
 
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, isPlayer ? 8.5 : 7, 0, Math.PI * 2);
-      ctx.fillStyle = tireColor;
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, isPlayer ? 6 : 4.8, 0, Math.PI * 2);
-      ctx.fillStyle = team.primaryColor;
-      ctx.fill();
-
-      const tagX = pos.x + 10;
-      const tagY = pos.y - 6;
-      ctx.fillStyle = isPlayer ? 'rgba(245, 158, 11, 0.95)' : 'rgba(15, 23, 42, 0.86)';
+      // Telemetry Driver Tag
+      const tagX = pose.x + 12;
+      const tagY = pose.y - 7;
+      ctx.fillStyle =
+        car.overtakeFlashSec > 0
+          ? 'rgba(16, 185, 129, 0.95)'
+          : isPlayer
+            ? 'rgba(245, 158, 11, 0.95)'
+            : 'rgba(15, 23, 42, 0.86)';
       ctx.fillRect(tagX - 2, tagY - 9, 28, 12);
 
       ctx.font = 'bold 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-      ctx.fillStyle = isPlayer ? '#020617' : '#f8fafc';
+      ctx.fillStyle = isPlayer || car.overtakeFlashSec > 0 ? '#020617' : '#f8fafc';
       ctx.fillText(driver.code, tagX, tagY);
     });
 
+    // Rain Particles
     if (weather === 'LIGHT_RAIN' || weather === 'HEAVY_RAIN') {
       const activeDrops = weather === 'HEAVY_RAIN' ? 140 : 55;
       const speedMult = weather === 'HEAVY_RAIN' ? 1.5 : 0.9;
@@ -813,27 +1261,36 @@ function TrackCanvas({ raceState, teams, drivers, playerTeamId }) {
       }
     }
 
+    // Track Header Overlay
     ctx.font = 'bold 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.fillStyle = '#94a3b8';
     ctx.fillText(`${track.name.toUpperCase()} // ${track.lengthKm.toFixed(2)} KM`, 18, 26);
 
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.fillStyle = '#64748b';
-    ctx.fillText(`SURFACE WETNESS: ${Math.round(trackWetness)}% | PIT LOSS: ~${track.pitLossSec}s`, 18, 44);
+    ctx.fillText(`WETNESS: ${Math.round(trackWetness)}% | DRS: ${flagStatus === 'GREEN' && trackWetness < 22 ? 'ENABLED' : 'DISABLED'}`, 18, 44);
+
+    // Flag Status Banner inside Canvas
+    if (flagStatus !== 'GREEN') {
+      ctx.fillStyle = flagStatus === 'RED_FLAG' ? 'rgba(220, 38, 38, 0.92)' : 'rgba(234, 179, 8, 0.92)';
+      ctx.fillRect(W - 220, 14, 202, 28);
+      ctx.font = 'bold 12px ui-monospace, monospace';
+      ctx.fillStyle = flagStatus === 'RED_FLAG' ? '#ffffff' : '#020617';
+      const label = flagStatus === 'RED_FLAG' ? 'RED FLAG — SESSION HALTED' : flagStatus === 'SC' ? 'SAFETY CAR DEPLOYED' : 'VIRTUAL SAFETY CAR';
+      ctx.fillText(label, W - 210, 32);
+    }
   }, [raceState, teams, drivers, playerTeamId]);
 
   return (
     <div className="relative w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl">
       <canvas ref={canvasRef} width={1000} height={620} className="block h-auto w-full select-none" />
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 bg-slate-900/90 px-4 py-2 text-xs text-slate-400 font-mono">
-        <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-amber-400/40" />Player Entry</span>
-          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-cyan-400" />Sector 2 Split</span>
-          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-purple-400" />Sector 3 Split</span>
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400" />Player Car</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-emerald-500" />DRS Zone / Active</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-sky-400" />ERS Boost</span>
         </div>
-        <div>
-          Sectors: S1 {(raceState.track.sectorSplits[0] * 100).toFixed(0)}% · S2 {((raceState.track.sectorSplits[1] - raceState.track.sectorSplits[0]) * 100).toFixed(0)}% · S3 {((1 - raceState.track.sectorSplits[1]) * 100).toFixed(0)}%
-        </div>
+        <div>2 DRS Detection Zones · Lateral Slipstream Overtaking</div>
       </div>
     </div>
   );
@@ -854,7 +1311,7 @@ function TimingTower({ raceState, teams, drivers, playerTeamId }) {
     <div className="flex flex-col rounded-xl border border-slate-800 bg-slate-900/90 shadow-xl overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950/70 px-3.5 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+          <span className={`h-2 w-2 rounded-full ${raceState.flagStatus === 'RED_FLAG' ? 'bg-rose-500' : raceState.flagStatus !== 'GREEN' ? 'bg-amber-400' : 'bg-emerald-400'} animate-pulse`} />
           <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">Live Timing Tower</h2>
         </div>
         <span className="font-mono text-xs text-slate-400 tabular-nums">
@@ -865,12 +1322,13 @@ function TimingTower({ raceState, teams, drivers, playerTeamId }) {
         <table className="w-full text-left border-collapse font-mono text-xs tabular-nums">
           <thead>
             <tr className="border-b border-slate-800/90 bg-slate-950/40 text-[10px] uppercase text-slate-400">
-              <th className="py-2 pl-3 pr-1.5">Pos</th>
-              <th className="py-2 px-1.5">Driver</th>
-              <th className="py-2 px-1.5 text-right">Gap</th>
-              <th className="py-2 px-1.5 text-center">Tire</th>
-              <th className="py-2 px-1.5 text-right">Wear</th>
-              <th className="py-2 pl-1.5 pr-3 text-right">Last Lap</th>
+              <th className="py-2 pl-2.5 pr-1">Pos</th>
+              <th className="py-2 px-1">Driver</th>
+              <th className="py-2 px-1 text-right">Gap</th>
+              <th className="py-2 px-1 text-center">Aero</th>
+              <th className="py-2 px-1 text-center">Tire</th>
+              <th className="py-2 px-1 text-right">Wear</th>
+              <th className="py-2 pl-1 pr-2.5 text-right">Last Lap</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50">
@@ -883,29 +1341,37 @@ function TimingTower({ raceState, teams, drivers, playerTeamId }) {
 
               return (
                 <tr key={car.driverId} className={`transition-colors ${car.dnf ? 'opacity-45 bg-slate-950/50' : isPlayer ? 'bg-amber-500/10 hover:bg-amber-500/15' : 'hover:bg-slate-800/40'}`}>
-                  <td className="py-1.5 pl-3 pr-1.5 font-bold text-slate-300">{car.dnf ? 'DNF' : car.position}</td>
-                  <td className="py-1.5 px-1.5">
-                    <div className="flex items-center gap-1.5">
+                  <td className="py-1.5 pl-2.5 pr-1 font-bold text-slate-300">{car.dnf ? 'DNF' : car.position}</td>
+                  <td className="py-1.5 px-1">
+                    <div className="flex items-center gap-1">
                       <span className="inline-block h-3 w-1 rounded-sm shrink-0" style={{ backgroundColor: team.primaryColor }} />
                       <span className={`font-bold ${isPlayer ? 'text-amber-300' : 'text-slate-100'}`}>{driver.code}</span>
                       {car.inPit && <span className="rounded bg-amber-500/20 px-1 text-[9px] font-bold text-amber-300 border border-amber-500/40">PIT</span>}
-                      {!car.inPit && car.pitRequested && <span className="rounded bg-cyan-500/20 px-1 text-[9px] font-bold text-cyan-300">BOX</span>}
                     </div>
                   </td>
-                  <td className="py-1.5 px-1.5 text-right text-slate-300">
-                    {car.dnf ? car.dnfReason || 'OUT' : car.position === 1 ? 'LEADER' : `+${car.gapToLeaderSec.toFixed(1)}s`}
+                  <td className="py-1.5 px-1 text-right text-slate-300">
+                    {car.dnf ? 'OUT' : car.position === 1 ? 'LDR' : `+${car.gapToLeaderSec.toFixed(1)}s`}
                   </td>
-                  <td className="py-1.5 px-1.5 text-center">
+                  <td className="py-1.5 px-1 text-center">
+                    {car.drsActive ? (
+                      <span className="rounded bg-emerald-500/25 px-1 text-[9px] font-bold text-emerald-300 border border-emerald-500/40">DRS</span>
+                    ) : car.inDirtyAir ? (
+                      <span className="rounded bg-orange-500/20 px-1 text-[9px] font-bold text-orange-300" title="Dirty Air Wake">WAKE</span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                  </td>
+                  <td className="py-1.5 px-1 text-center">
                     <span className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-extrabold" style={{ backgroundColor: tireSpec.color, color: tireSpec.textColor }}>
                       {tireSpec.short}
                     </span>
                   </td>
-                  <td className="py-1.5 px-1.5 text-right">
+                  <td className="py-1.5 px-1 text-right">
                     <span className={car.tireWear > 72 ? 'text-rose-400 font-bold' : car.tireWear > 45 ? 'text-amber-300' : 'text-emerald-400'}>
                       {Math.round(100 - car.tireWear)}%
                     </span>
                   </td>
-                  <td className={`py-1.5 pl-1.5 pr-3 text-right ${isFastest ? 'text-purple-400 font-bold' : 'text-slate-400'}`}>
+                  <td className={`py-1.5 pl-1 pr-2.5 text-right ${isFastest ? 'text-purple-400 font-bold' : 'text-slate-400'}`}>
                     {formatLapTime(car.lastLapTimeSec)}
                   </td>
                 </tr>
@@ -918,14 +1384,19 @@ function TimingTower({ raceState, teams, drivers, playerTeamId }) {
   );
 }
 
-function DriverPitWall({ driver, telemetry, onChangePace, onTogglePit }) {
+function DriverPitWall({ driver, telemetry, onChangePace, onChangeErs, onTogglePit }) {
   const tireLife = Math.max(0, Math.round(100 - telemetry.tireWear));
   const currentTire = TIRE_SPECS[telemetry.tire];
   const COMPOUNDS = ['SOFT', 'MEDIUM', 'HARD', 'INTER', 'WET'];
   const PACE_MODES = [
-    { mode: 'CONSERVE', label: 'Conserve', desc: '-Wear / -Fuel' },
-    { mode: 'STANDARD', label: 'Standard', desc: 'Balanced' },
-    { mode: 'ATTACK', label: 'Attack', desc: '+Pace / +Wear' },
+    { mode: 'CONSERVE', label: 'Conserve', desc: '-Wear' },
+    { mode: 'STANDARD', label: 'Standard', desc: 'Neutral' },
+    { mode: 'ATTACK', label: 'Attack', desc: '+Pace' },
+  ];
+  const ERS_MODES = [
+    { mode: 'HARVEST', label: 'Harvest', desc: '+Charge' },
+    { mode: 'BALANCED', label: 'Balanced', desc: 'Auto' },
+    { mode: 'OVERTAKE', label: 'Overtake', desc: 'Max kW' },
   ];
 
   return (
@@ -939,6 +1410,8 @@ function DriverPitWall({ driver, telemetry, onChangePace, onTogglePit }) {
             <div className="flex items-center gap-2">
               <span className="font-bold text-slate-100">{driver.name}</span>
               <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-400">{driver.code}</span>
+              {telemetry.drsActive && <span className="rounded bg-emerald-500/20 border border-emerald-500/40 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300">DRS OPEN</span>}
+              {telemetry.inDirtyAir && !telemetry.drsActive && <span className="rounded bg-orange-500/20 border border-orange-500/40 px-1.5 py-0.5 font-mono text-[10px] font-bold text-orange-300">DIRTY AIR</span>}
             </div>
             <div className="text-xs text-slate-400 font-mono">
               {telemetry.dnf ? (
@@ -950,69 +1423,96 @@ function DriverPitWall({ driver, telemetry, onChangePace, onTogglePit }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="text-right font-mono">
-            <div className="text-[10px] uppercase text-slate-400">Fitted</div>
-            <div className="text-xs font-bold text-slate-200">{currentTire.label}</div>
-          </div>
           <span className="flex h-8 w-8 items-center justify-center rounded-full font-mono text-sm font-black shadow" style={{ backgroundColor: currentTire.color, color: currentTire.textColor }}>
             {currentTire.short}
           </span>
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 font-mono text-xs">
-        <div className="rounded-lg bg-slate-950/70 p-2.5 border border-slate-800/80">
-          <div className="flex justify-between text-[11px] text-slate-400 mb-1">
-            <span>TIRE CONDITION</span>
+      {/* Telemetry Bars: Tire, Fuel, ERS Battery */}
+      <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-xs">
+        <div className="rounded-lg bg-slate-950/70 p-2 border border-slate-800/80">
+          <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+            <span>TIRE</span>
             <span className={tireLife < 28 ? 'text-rose-400 font-bold' : tireLife < 55 ? 'text-amber-300 font-bold' : 'text-emerald-400 font-bold'}>{tireLife}%</span>
           </div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
-            <div className={`h-full transition-all duration-200 ${tireLife < 28 ? 'bg-rose-500' : tireLife < 55 ? 'bg-amber-400' : 'bg-emerald-500'}`} style={{ width: `${tireLife}%` }} />
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className={`h-full transition-all ${tireLife < 28 ? 'bg-rose-500' : tireLife < 55 ? 'bg-amber-400' : 'bg-emerald-500'}`} style={{ width: `${tireLife}%` }} />
           </div>
         </div>
 
-        <div className="rounded-lg bg-slate-950/70 p-2.5 border border-slate-800/80">
-          <div className="flex justify-between text-[11px] text-slate-400 mb-1">
-            <span>FUEL REMAINING</span>
-            <span className="text-cyan-300 font-bold">{telemetry.fuelKg.toFixed(1)} kg</span>
+        <div className="rounded-lg bg-slate-950/70 p-2 border border-slate-800/80">
+          <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+            <span>FUEL</span>
+            <span className="text-cyan-300 font-bold">{telemetry.fuelKg.toFixed(1)}kg</span>
           </div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
-            <div className="h-full bg-cyan-500 transition-all duration-200" style={{ width: `${Math.min(100, (telemetry.fuelKg / 110) * 100)}%` }} />
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className="h-full bg-cyan-500 transition-all" style={{ width: `${Math.min(100, (telemetry.fuelKg / 110) * 100)}%` }} />
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-slate-950/70 p-2 border border-slate-800/80">
+          <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+            <span>ERS SOC</span>
+            <span className="text-sky-300 font-bold">{Math.round(telemetry.ersBattery)}%</span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className="h-full bg-sky-400 transition-all" style={{ width: `${Math.round(telemetry.ersBattery)}%` }} />
           </div>
         </div>
       </div>
 
-      <div className="mt-3">
-        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Energy & Pace Mode</div>
-        <div className="grid grid-cols-3 gap-1.5">
-          {PACE_MODES.map(({ mode, label, desc }) => {
-            const active = telemetry.paceMode === mode;
-            return (
-              <button
-                key={mode}
-                disabled={telemetry.dnf}
-                onClick={() => onChangePace(driver.id, mode)}
-                className={`rounded-lg border px-2 py-1.5 text-left transition ${
-                  active
-                    ? mode === 'ATTACK'
-                      ? 'border-rose-500 bg-rose-500/20 text-rose-200'
-                      : mode === 'CONSERVE'
-                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
-                        : 'border-amber-500 bg-amber-500/20 text-amber-200'
-                    : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                } disabled:opacity-40`}
-              >
-                <div className="text-xs font-bold">{label}</div>
-                <div className="text-[10px] opacity-80">{desc}</div>
-              </button>
-            );
-          })}
+      {/* Pace & ERS Controls */}
+      <div className="mt-3 grid grid-cols-2 gap-2.5">
+        <div>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Pace Mode</div>
+          <div className="grid grid-cols-3 gap-1">
+            {PACE_MODES.map(({ mode, label, desc }) => {
+              const active = telemetry.paceMode === mode;
+              return (
+                <button
+                  key={mode}
+                  disabled={telemetry.dnf}
+                  onClick={() => onChangePace(driver.id, mode)}
+                  className={`rounded-lg border px-1.5 py-1 text-left transition ${
+                    active ? 'border-amber-500 bg-amber-500/20 text-amber-200' : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:text-slate-200'
+                  } disabled:opacity-40`}
+                >
+                  <div className="text-[11px] font-bold">{label}</div>
+                  <div className="text-[9px] opacity-75">{desc}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">ERS Deployment</div>
+          <div className="grid grid-cols-3 gap-1">
+            {ERS_MODES.map(({ mode, label, desc }) => {
+              const active = telemetry.ersMode === mode;
+              return (
+                <button
+                  key={mode}
+                  disabled={telemetry.dnf}
+                  onClick={() => onChangeErs(driver.id, mode)}
+                  className={`rounded-lg border px-1.5 py-1 text-left transition ${
+                    active ? 'border-sky-500 bg-sky-500/20 text-sky-200' : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:text-slate-200'
+                  } disabled:opacity-40`}
+                >
+                  <div className="text-[11px] font-bold">{label}</div>
+                  <div className="text-[9px] opacity-75">{desc}</div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
+      {/* Pit Stop Controls */}
       <div className="mt-3 border-t border-slate-800/80 pt-3">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Next Stint Compound</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Pit Strategy</span>
           <button
             disabled={telemetry.dnf || telemetry.inPit}
             onClick={() => onTogglePit(driver.id)}
@@ -1020,11 +1520,11 @@ function DriverPitWall({ driver, telemetry, onChangePace, onTogglePit }) {
               telemetry.inPit
                 ? 'bg-amber-500/30 text-amber-200 border border-amber-400 cursor-wait'
                 : telemetry.pitRequested
-                  ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 shadow-md shadow-cyan-500/20'
+                  ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400'
                   : 'bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700'
             } disabled:opacity-40`}
           >
-            {telemetry.inPit ? 'IN PIT LANE...' : telemetry.pitRequested ? `BOXING (${TIRE_SPECS[telemetry.nextTire].short}) — CANCEL` : 'CALL BOX THIS LAP'}
+            {telemetry.inPit ? 'IN PIT LANE...' : telemetry.pitRequested ? `BOXING (${TIRE_SPECS[telemetry.nextTire].short}) — CANCEL` : 'BOX THIS LAP'}
           </button>
         </div>
 
@@ -1037,14 +1537,14 @@ function DriverPitWall({ driver, telemetry, onChangePace, onTogglePit }) {
                 key={comp}
                 disabled={telemetry.dnf}
                 onClick={() => onTogglePit(driver.id, comp)}
-                className={`flex flex-col items-center justify-center rounded-lg border py-1.5 font-mono text-xs transition ${
+                className={`flex flex-col items-center justify-center rounded-lg border py-1 font-mono text-xs transition ${
                   selected ? 'border-amber-400 bg-slate-800 ring-1 ring-amber-400/50' : 'border-slate-800 bg-slate-950/60 opacity-75 hover:opacity-100'
                 } disabled:opacity-30`}
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-black" style={{ backgroundColor: spec.color, color: spec.textColor }}>
+                <span className="flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-black" style={{ backgroundColor: spec.color, color: spec.textColor }}>
                   {spec.short}
                 </span>
-                <span className="mt-1 text-[10px] text-slate-300">{comp}</span>
+                <span className="mt-0.5 text-[9px] text-slate-300">{comp}</span>
               </button>
             );
           })}
@@ -1063,8 +1563,8 @@ function GarageView({ season, round, teams, drivers, playerTeam, nextTrack, onUp
   const getUpgradeCost = (currentVal) => Number((3.5 + Math.max(0, currentVal - 65) * 0.25).toFixed(1));
 
   const UPGRADE_META = [
-    { key: 'aero', title: 'Aerodynamics Package', subtitle: 'High-speed cornering downforce & floor venturi efficiency', accent: 'bg-cyan-500' },
-    { key: 'powertrain', title: 'Hybrid Powertrain', subtitle: 'Internal combustion output & electrical deployment recovery', accent: 'bg-rose-500' },
+    { key: 'aero', title: 'Aerodynamics Package', subtitle: 'Downforce, DRS efficiency & reduced dirty-air wake sensitivity', accent: 'bg-cyan-500' },
+    { key: 'powertrain', title: 'Hybrid Powertrain & ERS', subtitle: 'ICE power & MGU-K electrical deployment efficiency', accent: 'bg-rose-500' },
     { key: 'chassis', title: 'Monocoque & Suspension', subtitle: 'Mechanical grip, kerb compliance & weight distribution', accent: 'bg-amber-500' },
     { key: 'reliability', title: 'Component Reliability', subtitle: 'Thermal tolerances & gearbox durability under Attack mode', accent: 'bg-emerald-500' },
   ];
@@ -1346,6 +1846,7 @@ function RaceLog({ logs }) {
       case 'PIT': return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
       case 'OVERTAKE': return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
       case 'INCIDENT': return 'bg-rose-500/20 text-rose-300 border-rose-500/40';
+      case 'FLAG': return 'bg-yellow-500/25 text-yellow-200 border-yellow-500/50';
       default: return 'bg-slate-800 text-slate-300 border-slate-700';
     }
   };
@@ -1464,7 +1965,7 @@ function PostRacePodium({ raceState, teams, drivers, playerTeamId, onClaimAndRet
 // ==========================================
 // 6. MAIN APPLICATION
 // ==========================================
-const STORAGE_KEY = 'apex_grid_manager_save_v1';
+const STORAGE_KEY = 'apex_grid_manager_save_v2';
 
 function loadSavedState() {
   try {
@@ -1499,6 +2000,16 @@ function App() {
     soundEngine.setMuted(next);
   };
 
+  // Continuous synthesized engine note during active race
+  useEffect(() => {
+    const active = phase === 'RACING' && raceState && !raceState.finished;
+    const anyErs = Boolean(raceState?.cars.some((c) => c.teamId === playerTeam.id && c.ersMode === 'OVERTAKE' && c.ersBattery > 2));
+    soundEngine.updateEngineHum(active, simSpeed, raceState?.flagStatus || 'GREEN', anyErs);
+    return () => {
+      if (!active) soundEngine.stopEngineHum();
+    };
+  }, [phase, simSpeed, raceState?.finished, raceState?.flagStatus, muted]);
+
   const handleUpgradeCar = (stat, cost) => {
     if (playerTeam.budget < cost) return;
     soundEngine.playUpgradeConfirm();
@@ -1531,12 +2042,24 @@ function App() {
     const interval = window.setInterval(() => {
       setRaceState((prev) => {
         if (!prev || prev.finished) return prev;
-        const dtSimSec = (tickIntervalMs / 1000) * 2.8 * simSpeed;
-        const { nextState, events } = stepRaceSimulation(prev, dtSimSec, career.teams, career.drivers, playerTeam.id);
-        if (events.weatherChanged) soundEngine.playWeatherAlert();
-        else if (events.radioAlert) soundEngine.playRadioBeep();
-        else if (events.playerLapCompleted) soundEngine.playTelemetryTick();
-        return nextState;
+        // Sub-step high speed multipliers (8x, 16x, 32x) into smaller increments so lap crossings & overtakes remain crisp
+        const subSteps = simSpeed >= 16 ? 4 : simSpeed >= 8 ? 2 : 1;
+        const totalDt = (tickIntervalMs / 1000) * 2.8 * simSpeed;
+        const stepDt = totalDt / subSteps;
+
+        let curr = prev;
+        for (let s = 0; s < subSteps; s++) {
+          if (curr.finished) break;
+          const { nextState, events } = stepRaceSimulation(curr, stepDt, career.teams, career.drivers, playerTeam.id);
+          curr = nextState;
+          if (events.flagChanged) soundEngine.playFlagAlert(events.isRedFlag);
+          else if (events.weatherChanged) soundEngine.playWeatherAlert();
+          else if (events.pitStopSound) soundEngine.playPitAirGun();
+          else if (events.overtakeEvent) soundEngine.playOvertakeWhoosh();
+          else if (events.radioAlert) soundEngine.playRadioBeep();
+          else if (events.playerLapCompleted && simSpeed <= 4) soundEngine.playTelemetryTick();
+        }
+        return curr;
       });
     }, tickIntervalMs);
     return () => window.clearInterval(interval);
@@ -1545,6 +2068,11 @@ function App() {
   const handleChangePace = (driverId, mode) => {
     soundEngine.playTelemetryTick();
     setRaceState((prev) => !prev ? prev : { ...prev, cars: prev.cars.map((c) => (c.driverId === driverId ? { ...c, paceMode: mode } : c)) });
+  };
+
+  const handleChangeErs = (driverId, mode) => {
+    soundEngine.playTelemetryTick();
+    setRaceState((prev) => !prev ? prev : { ...prev, cars: prev.cars.map((c) => (c.driverId === driverId ? { ...c, ersMode: mode } : c)) });
   };
 
   const handleTogglePit = (driverId, compound) => {
@@ -1650,15 +2178,38 @@ function App() {
 
         {phase === 'RACING' && raceState && (
           <div className="space-y-4">
+            {/* Race Control & Simulation Speed Bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/95 px-4 py-3 shadow-lg">
               <div className="flex flex-wrap items-center gap-4 font-mono text-xs">
+                <div>
+                  <span className="text-slate-400">FLAG: </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 font-bold ${
+                      raceState.flagStatus === 'RED_FLAG'
+                        ? 'bg-rose-600 text-white'
+                        : raceState.flagStatus === 'SC' || raceState.flagStatus === 'VSC'
+                          ? 'bg-yellow-400 text-slate-950'
+                          : 'bg-emerald-500/20 text-emerald-300'
+                    }`}
+                  >
+                    {raceState.flagStatus.replace('_', ' ')}
+                  </span>
+                </div>
                 <div><span className="text-slate-400">WEATHER: </span><span className={`font-bold ${raceState.weather.includes('RAIN') ? 'text-cyan-300' : 'text-amber-300'}`}>{raceState.weather.replace('_', ' ')}</span></div>
-                <div><span className="text-slate-400">NEXT RADAR: </span><span className="font-bold text-slate-200">{raceState.forecast[0]?.replace('_', ' ')}</span></div>
                 <div><span className="text-slate-400">WETNESS: </span><span className="font-bold text-cyan-400 tabular-nums">{Math.round(raceState.trackWetness)}%</span></div>
               </div>
-              <div className="flex items-center gap-1.5 font-mono text-xs">
-                {[{ spd: 0, label: 'PAUSE' }, { spd: 1, label: '1X' }, { spd: 2, label: '2X' }, { spd: 4, label: '4X' }].map(({ spd, label }) => (
-                  <button key={spd} onClick={() => setSimSpeed(spd)} className={`rounded-lg px-3 py-1.5 font-bold transition ${simSpeed === spd ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}>
+
+              <div className="flex flex-wrap items-center gap-1 font-mono text-xs">
+                {[
+                  { spd: 0, label: 'PAUSE' },
+                  { spd: 1, label: '1X' },
+                  { spd: 2, label: '2X' },
+                  { spd: 4, label: '4X' },
+                  { spd: 8, label: '8X' },
+                  { spd: 16, label: '16X' },
+                  { spd: 32, label: '32X' },
+                ].map(({ spd, label }) => (
+                  <button key={spd} onClick={() => setSimSpeed(spd)} className={`rounded-lg px-2.5 py-1.5 font-bold transition ${simSpeed === spd ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}>
                     {label}
                   </button>
                 ))}
@@ -1679,7 +2230,16 @@ function App() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   {playerDrivers.map((drv) => {
                     const telemetry = raceState.cars.find((c) => c.driverId === drv.id);
-                    return <DriverPitWall key={drv.id} driver={drv} telemetry={telemetry} onChangePace={handleChangePace} onTogglePit={handleTogglePit} />;
+                    return (
+                      <DriverPitWall
+                        key={drv.id}
+                        driver={drv}
+                        telemetry={telemetry}
+                        onChangePace={handleChangePace}
+                        onChangeErs={handleChangeErs}
+                        onTogglePit={handleTogglePit}
+                      />
+                    );
                   })}
                 </div>
                 <RaceLog logs={raceState.logs} />
