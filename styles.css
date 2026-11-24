@@ -5,6 +5,7 @@ body {
   color: #f1f5f9;
   margin: 0;
   padding: 0;
+  overflow-x: hidden;
 }
 
 .tabular-nums {
@@ -29,7 +30,21 @@ body {
   background: #475569;
 }
 
-@keyframes scanline {
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100%); }
+.broadcast-glow {
+  box-shadow: 0 0 32px rgba(2, 6, 23, 0.9), inset 0 1px 0 rgba(148, 163, 184, 0.08);
+}
+
+.sector-purple {
+  background-color: #9333ea;
+  color: #ffffff;
+}
+
+.sector-green {
+  background-color: #16a34a;
+  color: #ffffff;
+}
+
+.sector-yellow {
+  background-color: #ca8a04;
+  color: #020617;
 }
