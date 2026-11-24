@@ -28,3 +28,8 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
